@@ -1,0 +1,57 @@
+# Prometheus Alert Rules
+# Reference: TDD §12.3
+
+groups:
+  - name: reconciliation.pipeline
+    rules:
+
+      - alert: PipelineLatencyHigh
+        expr: histogram_quantile(0.95, reconciliation_pipeline_duration_seconds_bucket) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline P95 latency exceeds 10s SLA"
+          description: "Flow {{ $labels.flow_name }} P95 latency is {{ $value }}s"
+
+      - alert: WebhookSignatureFailuresHigh
+        expr: rate(reconciliation_webhook_signature_failures_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of webhook signature failures"
+          description: "PSP {{ $labels.psp }} has {{ $value }} failures/s"
+
+  - name: reconciliation.financial
+    rules:
+
+      - alert: OpenExposureHigh
+        expr: reconciliation_open_exposure_ngn > 500000
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Open financial exposure exceeds NGN 500,000"
+          description: "PSP {{ $labels.psp_name }} exposure: NGN {{ $value }}"
+
+      - alert: MatchRateLow
+        expr: reconciliation_match_rate_pct < 95
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reconciliation match rate below 95%"
+          description: "PSP {{ $labels.psp_name }} match rate: {{ $value }}%"
+
+  - name: reconciliation.fx
+    rules:
+
+      - alert: FXRateStale
+        expr: reconciliation_fx_rate_age_seconds > 7200
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "FX rate snapshot older than 2 hours"
+          description: "{{ $labels.currency_pair }} rate not refreshed in {{ $value }}s"

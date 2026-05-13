@@ -1,0 +1,6 @@
+# Redpanda Console Configuration
+# Reference: TDD §5
+
+kafka:
+  brokers:
+    - redpanda:9092

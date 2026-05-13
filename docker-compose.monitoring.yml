@@ -1,0 +1,43 @@
+# docker-compose.monitoring.yml — Prometheus + Grafana overlay
+# Usage: docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# Reference: TDD §5
+
+name: reconciliation-engine
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: rec_prometheus
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "9090:9090"
+    networks:
+      - reconciliation-engine_rec_internal
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: rec_grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - reconciliation-engine_rec_internal
+
+volumes:
+  prometheus_data:
+  grafana_data:
