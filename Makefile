@@ -1,5 +1,5 @@
 .PHONY: up down build test test-unit test-integration test-contracts lint format \
-        migrate seed data smoke logs shell clean security-check test-all help
+        migrate data smoke logs shell clean security-check test-all help
 
 ## ── Environment ─────────────────────────────────────────────────────────────
 up:          ## Start all core services
@@ -27,9 +27,6 @@ migrate:     ## Run Alembic migrations
 
 migrate-down: ## Rollback one migration
 	docker compose run --rm migrations alembic downgrade -1
-
-seed:        ## Seed settlement windows and test data
-	docker compose exec prefect_worker python scripts/seed_settlement_windows.py
 
 ## ── Testing ──────────────────────────────────────────────────────────────────
 test:        ## Run full test suite
