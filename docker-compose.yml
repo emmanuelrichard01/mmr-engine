@@ -108,7 +108,7 @@ services:
 
   # ── MinIO Init (creates buckets and applies Object Lock) ──────────────────
   minio_init:
-    image: minio/mc:RELEASE.2024-05-03T17-14-17Z
+    image: minio/mc:latest
     container_name: rec_minio_init
     depends_on:
       minio:
