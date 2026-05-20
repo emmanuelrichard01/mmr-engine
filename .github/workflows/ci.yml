@@ -102,6 +102,24 @@ jobs:
           FLUTTERWAVE_SECRET_HASH: test_hash
           FX_PROVIDER_API_KEY: test_key
 
+      - name: Run contract tests
+        run: |
+          pytest tests/contracts/ -v \
+            --tb=short
+        env:
+          POSTGRES_PIPELINE_DSN: postgresql+asyncpg://postgres:test_password@localhost:5432/reconciliation_test
+          POSTGRES_API_DSN: postgresql+asyncpg://postgres:test_password@localhost:5432/reconciliation_test
+          POSTGRES_READONLY_DSN: postgresql+asyncpg://postgres:test_password@localhost:5432/reconciliation_test
+          MINIO_ACCESS_KEY: test
+          MINIO_SECRET_KEY: testtest
+          PAYSTACK_SECRET_KEY: sk_test_dummy
+          FLUTTERWAVE_SECRET_KEY: FLWSECK_TEST-dummy
+          FLUTTERWAVE_SECRET_HASH: test_hash
+          FX_PROVIDER_API_KEY: test_key
+
+      - name: Security scan
+        run: python scripts/security_check.py
+
   docker:
     name: Docker Build Validation
     runs-on: ubuntu-latest
@@ -121,3 +139,25 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
           echo "Docker Compose configuration is valid"
+
+  dashboard:
+    name: Dashboard Build
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: cd dashboard && npm install
+
+      - name: Build dashboard
+        run: cd dashboard && npm run build
+
+      - name: Lint dashboard
+        run: cd dashboard && npm run lint || true

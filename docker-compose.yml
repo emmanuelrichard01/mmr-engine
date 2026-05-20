@@ -243,6 +243,23 @@ services:
       - rec_internal
     restart: "no"
 
+  # ── Dashboard (Next.js) ──────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: rec_dashboard
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - rec_internal
+
 volumes:
   postgres_data:
   redpanda_data:
@@ -252,3 +269,4 @@ volumes:
 networks:
   rec_internal:
     driver: bridge
+

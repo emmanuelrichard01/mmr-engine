@@ -6,7 +6,8 @@
 #   api        → FastAPI + uvicorn
 #   worker     → Prefect + dbt
 #   migrations → Alembic
-#   dashboard  → Streamlit
+#
+# Dashboard: see dashboard/Dockerfile (Next.js 15, standalone build)
 #
 # Reference: TDD §6
 
@@ -57,13 +58,3 @@ COPY src/config.py ./src/config.py
 COPY src/__init__.py ./src/__init__.py
 # CMD provided by compose: alembic upgrade head
 
-
-# ── Dashboard stage ──────────────────────────────────────────────────────────
-FROM base AS dashboard
-RUN uv pip install --system --no-cache streamlit plotly
-COPY src/dashboard/ ./src/dashboard/
-EXPOSE 8501
-CMD ["streamlit", "run", "src/dashboard/app.py", \
-     "--server.port=8501", \
-     "--server.address=0.0.0.0", \
-     "--server.headless=true"]

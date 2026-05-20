@@ -3,20 +3,21 @@
 > **Purpose:** This file provides full context for any AI agent continuing work on this project.
 > It documents what has been built, the current state, and what remains.
 >
-> **Last Updated:** 2026-05-12
+> **Last Updated:** 2026-05-20
 
 ---
 
 ## Project Identity
 
 - **Name:** Cross-Border Mobile Money Reconciliation Engine
-- **Owner:** Emmanuel Richard
-- **Type:** Production-grade fintech data engineering system
-- **Language:** Python 3.12
-- **Framework:** FastAPI + Prefect 3 + dbt + SQLAlchemy async
+- **Owner:** Emmanuel Richard (`emmanuelrichard01`)
+- **Type:** Production-grade fintech data engineering system + executive dashboard
+- **Backend:** Python 3.12 — FastAPI + Prefect 3 + dbt + SQLAlchemy async
+- **Dashboard:** Next.js 15 + React 19 + TypeScript + Tailwind CSS v4 + Recharts
 - **Database:** PostgreSQL 16 (with pgcrypto, pg_trgm, btree_gist, pgaudit extensions)
 - **Message Queue:** Redpanda (Kafka-compatible)
 - **Object Storage:** MinIO (S3-compatible, Object Lock for compliance)
+- **Monitoring:** Prometheus + Grafana (9-panel dashboard)
 
 ---
 
@@ -35,6 +36,7 @@ All specifications live in `/docs/`. These are the canonical references:
 | `API SPECIFICATION.md` | All API endpoints, request/response schemas, error codes |
 | `DATA GOVERNANCE & SECURITY.md` | Threat model (T-001–T-009), NDPR compliance, access controls |
 | `QUALITY ASSURANCE.md` | 10 correctness properties (C-001–C-010), testing strategy |
+| `CDA.md` | **Credential & Deployment Architecture** — 3 deployment models (A/B/C), migration paths, trust model |
 | `RELEVANCE AND THREAT ASSESSMENT.md` | Competitive landscape, differentiation strategy |
 | `GTM_STRATEGY.md` | Data acquisition paths, commercial positioning, demo scripts |
 
@@ -52,7 +54,7 @@ All specifications live in `/docs/`. These are the canonical references:
 PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
     → Silver transform (idempotency, PII mask, FX rate) → PostgreSQL
     → Gold matching engine → Reconciliation pairs / Discrepancies
-    → CBN daily returns + Alerts
+    → CBN daily returns + Alerts → Dashboard + Grafana
 ```
 
 ---
@@ -69,7 +71,7 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 | **Init Scripts** | `scripts/init_postgres.sql` | Creates 4 DB roles on first boot |
 | **Infra Config** | `infra/prometheus/`, `infra/redpanda/` | Prometheus scrape config + 5 alert rules, Redpanda Console |
 | **Migrations** | `alembic/versions/000–012` | 13 migrations: extensions, 13 enums, 14 tables, 1 materialized view, 1 trigger function, 1 SQL function, role permissions, seed data |
-| **Observability** | `src/observability/metrics.py`, `src/observability/logging.py` | 13 Prometheus metrics, structlog JSON/console |
+| **Observability** | `src/observability/metrics.py`, `src/observability/logging.py` | 23 Prometheus metrics (webhooks, pipeline, matching, financial state, API, alerting, operational health), structlog JSON/console |
 | **Storage** | `src/storage/postgres.py` | Role-based async connection pools (pipeline/api/readonly) |
 | **API** | `src/api/main.py` | FastAPI factory with `/health`, `/health/ready` (deep), `/metrics`, CORS, exception handler |
 | **CI** | `.github/workflows/ci.yml` | Lint → Test (with PG service) → Docker build validation |
@@ -95,7 +97,7 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 | **Polling Clients** | `paystack_polling.py`, `flutterwave_polling.py` | REST API webhook fallback + gap detection |
 | **Simulator** | `simulate_webhooks.py` | CLI tool: matched pairs, duplicates, FX variance, batch |
 | **Data Generator** | `generate_demo_data.py` | 30-day synthetic Nigerian transaction history |
-| **Makefile** | Demo targets | `make demo`, `make webhook-batch`, `make demo-data` |
+| **Makefile** | Demo targets | `make demo`, `make webhook-batch`, `make demo-data`, `make demo-investor` |
 
 ### Week 3: Pipeline Flows ✅ (11 new files, 29 contract tests)
 
@@ -109,8 +111,6 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 | **Consumer Worker** | `consumer_worker.py` | Kafka consumer → Prefect bridge, dead letter queue |
 | **Contract Tests** | `test_bronze_schemas.py`, `test_silver_schema.py` | 36 test cases (incl. NUBAN + FX cross-field) |
 
----
-
 ### Week 4: Gold Layer + Matching Engine ✅ (5 new files, 46 unit tests)
 
 | Category | Files | Details |
@@ -122,11 +122,7 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 | **Matching Tests** | `test_matching.py` | 24 test cases: primary, probabilistic, trigram, weights, pipeline |
 | **Discrepancy Tests** | `test_discrepancy.py` | 22 test cases: amounts, missing settlement, FX, duplicates, late |
 
----
-
-## Remaining Work (Week 6)
-
-### Week 5: API + Alerting + Data Strategy ✅ (10 new files, 18 new tests)
+### Week 5: API + Alerting ✅ (10 new files, 18 new tests)
 
 | Category | Files | Details |
 |----------|-------|---------|
@@ -137,18 +133,51 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 | **Slack Alerting** | `slack.py` | Discrepancy alerts, exposure thresholds, gap detection, audit trail |
 | **Polling Backfill** | `polling_backfill_flow.py` | Client onboarding: fetch 30 days history → standard pipeline |
 | **Gap Detection** | `gap_detection_flow.py` | 6h scheduled cross-check: webhooks vs PSP API, auto-backfill |
-| **Auth Tests** | `test_auth.py` | SHA-256 hashing, public path config |
-| **Rate Limit Tests** | `test_rate_limit.py` | Token bucket mechanics, role limits |
-| **Docs Cleanup** | `Header.md`, `README.md`, `GTM_STRATEGY.md` | Renamed QUESTIONS.md, refreshed README, updated all doc references |
+| **Onboarding API** | `onboarding.py` | 5 endpoints: profile, validate-psp, connect-psp, backfill, status |
+| **CBN Report Engine** | `cbn_report.py` | Daily return generator, suspicious pattern detection, CSV/JSON export |
+| **CBN Tests** | `test_cbn_report.py` | 11 tests (all passing): metrics, PSP breakdown, cross-border, export |
+
+### Week 6: Dashboard + Onboarding + Integration + Polish ✅ (30+ files)
+
+| Category | Files | Details |
+|----------|-------|---------|
+| **API Wiring** | `main.py` (modified) | Registered all 4 route modules (`reconciliation`, `webhooks`, `onboarding`, `reports`), auth + rate-limit middleware |
+| **CORS Fix** | `config.py`, `.env.example` | Added `http://localhost:3000` (Next.js dashboard) to CORS origins |
+| **KPI Fix** | `demo-data.ts` | Restructured `KPISummary` from flat fields to nested `{value, delta, trend}` objects |
+| **DB Shutdown** | `main.py` | Added graceful DB connection pool disposal in lifespan shutdown |
+| **API Client** | `dashboard/lib/api.ts` (new) | Typed fetch wrapper for all FastAPI endpoints with 10s timeout, error handling |
+| **Data Hooks** | `dashboard/lib/hooks.ts` (new) | Custom React hooks with live API → demo data fallback, auto-refresh |
+| **Demo Banner** | `dashboard/components/demo-banner.tsx` (new) | Dismissable "Demo Mode" banner + compact Live/Demo indicator |
+| **Page Updates** | `page.tsx`, `discrepancies/`, `psp-health/`, `reports/` | All pages use hooks, loading skeletons, demo fallback |
+| **Onboarding Layout** | `app/onboarding/layout.tsx` (new) | Standalone layout (no sidebar), centered card design |
+| **Stepper Component** | `components/stepper.tsx` (new) | Responsive horizontal/vertical stepper with animated progress line |
+| **Onboarding Wizard** | `app/onboarding/page.tsx` (new) | 4-step wizard: Business Profile → Connect PSPs → Import Data → Ready |
+| **Pydantic Schemas** | `schemas/reconciliation.py`, `schemas/webhooks.py` (new) | 11 typed response models for API contracts |
+| **CBN Reports API** | `routes/reports.py` (new) | `GET /v1/reports/daily`, `GET /v1/reports/daily/{date}` |
+| **Integration Tests** | `tests/integration/test_api_routes.py` (new) | 20+ tests: health, reconciliation, webhooks, onboarding, reports |
+| **Pipeline Tests** | `tests/integration/test_pipeline_flow.py` (new) | Normalisation, PII masking, matching, discrepancy classification tests |
+| **CI Improvements** | `ci.yml` | Added security scanner, contract tests, dashboard build validation job |
+| **Dockerfile Cleanup** | `Dockerfile` | Removed stale Streamlit dashboard stage |
+| **Makefile** | `Makefile` | Added `security-check`, `test-all`, `help` targets |
+| **Dashboard Config** | `.env.local`, `.env.example` (new) | Development environment defaults for Next.js |
 
 ---
 
-### Week 6: Integration + Polish (NEXT)
-- End-to-end integration tests
-- DuckDB export pipeline
-- CBN daily return generator
-- Performance optimisation
-- Documentation finalisation
+## Remaining Work
+
+> All core features are implemented. The following are enhancement opportunities:
+
+### Future Enhancements (Not Blocking)
+- Guided investor walkthrough overlay (interactive tooltip tour)
+- Login page with session-based authentication (currently uses API key in env)
+- Per-PSP health API endpoint (currently falls back to demo data)
+- Daily summaries aggregation API (not yet exposed via REST)
+- Report download endpoint (`GET /v1/reports/daily/{date}/download`)
+- Settings page API wiring (currently local state only)
+
+### Documentation Polish
+- Update CDA.md: fix repo URL references
+- Create condensed client-facing credential document
 
 ---
 
@@ -162,6 +191,8 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 6. **Three database roles** — `pipeline` (writes), `api_user` (reads + resolution), `readonly` (dashboards). Never use superuser in app code.
 7. **Kafka `acks=all`** — Strongest durability guarantee for financial event streams.
 8. **Idempotency key format** — `{psp_name}:{psp_transaction_ref}:{event_type}` — exactly-once semantics.
+9. **Dark mode with indigo/emerald/amber/rose accents** — Dashboard design decision. Premium, high-contrast for data density.
+10. **Option A (Self-Hosted) first** — CDA.md §9: self-hosted is the architectural foundation for all deployment models.
 
 ---
 
@@ -195,6 +226,21 @@ Gold Layer:
 
 ---
 
+## Service Ports
+
+| Service | Port | URL |
+|---------|------|-----|
+| Dashboard (Next.js) | 3000 | http://localhost:3000 |
+| FastAPI Gateway | 8000 | http://localhost:8000/docs |
+| Grafana | 3001 | http://localhost:3001 |
+| Prometheus | 9090 | http://localhost:9090 |
+| Prefect Server | 4200 | http://localhost:4200 |
+| MinIO Console | 9001 | http://localhost:9001 |
+| Redpanda Console | 8080 | http://localhost:8080 |
+| Redpanda Kafka | 19092 | localhost:19092 |
+
+---
+
 ## Environment Setup
 
 ```bash
@@ -202,6 +248,12 @@ cp .env.example .env           # Configure credentials
 make up                        # Start 10-service Docker graph
 make migrate                   # Run 13 Alembic migrations
 make smoke                     # Verify all services healthy
+
+# Dashboard (local dev)
+cd dashboard && npm install && npm run dev
+
+# Full investor demo
+make demo-investor             # All services + Grafana + 30-day data
 ```
 
 ---
@@ -209,7 +261,9 @@ make smoke                     # Verify all services healthy
 ## How to Continue Work
 
 1. Read `/docs/TDD.md` §19 for the week-by-week roadmap
-2. Check the "Remaining Work" section above for current status
-3. Follow existing patterns: typed config in `src/config.py`, async sessions from `src/storage/postgres.py`, structlog for all logging
-4. All new tables/enums must go through Alembic migrations
-5. Write tests in `tests/unit/` for pure logic, `tests/integration/` for DB/Kafka interactions
+2. Read `/docs/CDA.md` for deployment model decisions
+3. Check the "Remaining Work" section above for current status
+4. Follow existing patterns: typed config in `src/config.py`, async sessions from `src/storage/postgres.py`, structlog for all logging
+5. All new tables/enums must go through Alembic migrations
+6. Write tests in `tests/unit/` for pure logic, `tests/integration/` for DB/Kafka interactions
+7. Dashboard components go in `dashboard/components/`, pages in `dashboard/app/(dashboard)/`

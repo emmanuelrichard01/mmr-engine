@@ -144,7 +144,10 @@ class Settings(BaseSettings):
     # ── API ───────────────────────────────────────────────────────────────
     api_rate_limit_per_minute: int = Field(default=100)
     api_request_timeout_seconds: int = Field(default=30)
-    api_cors_origins: list[str] = ["http://localhost:8501"]
+    api_cors_origins: list[str] = [
+        "http://localhost:3000",   # Next.js dashboard
+        "http://localhost:8501",   # Legacy Streamlit (if used)
+    ]
 
     @field_validator("environment", mode="before")
     @classmethod

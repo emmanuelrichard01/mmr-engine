@@ -23,13 +23,14 @@
 |---|----------|---------|
 | 7 | [DATA GOVERNANCE & SECURITY.md](DATA%20GOVERNANCE%20%26%20SECURITY.md) | How is sensitive financial data protected? |
 | 8 | [QUALITY ASSURANCE.md](QUALITY%20ASSURANCE.md) | What does "correct" mean, and how do we verify it? |
+| 9 | [CDA.md](CDA.md) | Credential architecture, deployment models (A/B/C), migration paths |
 
 ## Strategy & Positioning Documents
 
 | # | Document | Purpose |
 |---|----------|---------|
-| 9 | [RELEVANCE AND THREAT ASSESSMENT.md](RELEVANCE%20AND%20THREAT%20ASSESSMENT.md) | Competitive landscape + differentiation |
-| 10 | [GTM_STRATEGY.md](GTM_STRATEGY.md) | Data acquisition + go-to-market positioning |
+| 10 | [RELEVANCE AND THREAT ASSESSMENT.md](RELEVANCE%20AND%20THREAT%20ASSESSMENT.md) | Competitive landscape + differentiation |
+| 11 | [GTM_STRATEGY.md](GTM_STRATEGY.md) | Data acquisition + go-to-market positioning |
 
 ---
 
@@ -41,5 +42,5 @@
 | 2 | Engine Core — Idempotency, PII, FX, Normalisers | ✅ Complete |
 | 3 | Pipeline — Prefect Flows, Pandera Contracts, Kafka Consumer | ✅ Complete |
 | 4 | Gold Layer — Matching Engine, Discrepancy Classifier | ✅ Complete |
-| 5 | API + Alerting — Routes, Auth, Rate Limiting, Slack | 🔄 In Progress |
-| 6 | Integration + Polish — E2E Tests, CBN Reports, Performance | ⬜ Planned |
+| 5 | API + Alerting — Routes, Auth, Rate Limiting, Slack | ✅ Complete |
+| 6 | Dashboard + Onboarding + Observability + Polish | ✅ Complete |

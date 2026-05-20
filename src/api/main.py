@@ -21,6 +21,9 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from src.config import get_settings
 from src.observability.logging import configure_logging
 from src.observability.metrics import METRICS_REGISTRY
+from src.api.v1.routes import reconciliation, webhooks, onboarding, reports
+from src.api.middleware.auth import APIKeyAuthMiddleware
+from src.api.middleware.rate_limit import RateLimitMiddleware
 
 
 @asynccontextmanager
@@ -44,8 +47,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    # Shutdown
+    # Shutdown — dispose DB connection pools gracefully
     log.info("api.shutdown")
+    try:
+        from src.storage.postgres import get_db_manager
+        await get_db_manager().dispose()
+        log.info("api.db_pools_disposed")
+    except Exception as e:
+        log.warning("api.db_dispose_error", error=str(e))
 
 
 def create_app() -> FastAPI:
@@ -68,9 +77,22 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.api_cors_origins,
-        allow_methods=["GET", "POST"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "PUT", "OPTIONS"],
         allow_headers=["X-API-Key", "Content-Type", "X-Request-ID"],
     )
+
+    # ── Auth + Rate Limiting Middleware ────────────────────────────────────
+    # Registration order: CORS (outermost) → Auth → RateLimit (innermost)
+    # Starlette processes in reverse order, so rate limit runs first.
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(APIKeyAuthMiddleware)
+
+    # ── Route Registration ────────────────────────────────────────────────
+    app.include_router(reconciliation.router)
+    app.include_router(webhooks.router)
+    app.include_router(onboarding.router)
+    app.include_router(reports.router)
 
     # ── Health: liveness (fast, no deps) ─────────────────────────────────
     @app.get("/health", tags=["system"], include_in_schema=False)

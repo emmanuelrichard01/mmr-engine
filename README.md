@@ -6,6 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue?style=flat-square&logo=python" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=nextdotjs" alt="Next.js 15">
   <img src="https://img.shields.io/badge/FastAPI-0.111+-00C7B7?style=flat-square&logo=fastapi" alt="FastAPI">
   <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql" alt="PostgreSQL 16">
   <img src="https://img.shields.io/badge/Kafka-Redpanda-FF6B35?style=flat-square" alt="Redpanda">
@@ -14,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Tests-123_passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/Tests-160_passing-brightgreen?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/Demo-Synthetic_Data-8B5CF6?style=flat-square" alt="Synthetic Data">
   <img src="https://img.shields.io/badge/Production-Live_PSP_Credentials-10B981?style=flat-square" alt="Live PSP">
 </p>
@@ -81,10 +82,10 @@ A production-grade reconciliation engine that:
      │  Matched Pairs │ Discrepancies │ CBN Reports │
      └────────┬──────────────────────────────────┘
               │
-     ┌────────▼──────┐  ┌──────────────┐
-     │   Prometheus  │  │   Grafana    │
-     │   + Alerting  │  │  Dashboards  │
-     └───────────────┘  └──────────────┘
+     ┌────────▼──────┐  ┌──────────────┐  ┌──────────────┐
+     │   Prometheus  │  │   Grafana    │  │  Dashboard   │
+     │   + Alerting  │  │  Dashboards  │  │  (Next.js)   │
+     └───────────────┘  └──────────────┘  └──────────────┘
 ```
 
 **Medallion Architecture**: Bronze (raw immutable) → Silver (canonical ACID) → Gold (business logic)
@@ -113,13 +114,14 @@ Client provides PSP API key → Polling backfill (30 days) →
 
 | Category | Technology | Why |
 |----------|-----------|-----|
+| **Dashboard** | Next.js 15 + React 19 + Tailwind v4 | Executive-grade dark mode UI |
 | **API** | FastAPI 0.111+ | Async-native, OpenAPI auto-gen, DI |
 | **Database** | PostgreSQL 16 | ACID, pg_trgm fuzzy matching, pgaudit |
 | **Queue** | Redpanda 23.x | Kafka-compatible, 10x lower RAM |
 | **Storage** | MinIO | S3-compatible, Object Lock for compliance |
 | **Orchestration** | Prefect 3 | Event-driven flows, retry logic |
 | **Transforms** | dbt Core 1.8 | Versioned SQL, lineage, built-in tests |
-| **Observability** | Prometheus + Grafana | Metrics, alerting, dashboards |
+| **Observability** | Prometheus + Grafana | 23 metrics, 9-panel Grafana dashboard |
 | **Logging** | structlog | JSON in prod, human-readable in dev |
 
 ---
@@ -128,7 +130,7 @@ Client provides PSP API key → Polling backfill (30 days) →
 
 ```bash
 # 1. Clone and configure
-git clone https://github.com/emmanuelrichard/mmr-engine.git
+git clone https://github.com/emmanuelrichard01/mmr-engine.git
 cd mmr-engine
 cp .env.example .env    # Edit credentials as needed
 
@@ -159,13 +161,16 @@ make format             # Ruff auto-format
 make typecheck          # Mypy strict type check
 make coverage           # Tests + HTML coverage report
 make security-check     # Run CI security scanner
+make test-all           # All tests + coverage
 make clean              # Remove containers, volumes, caches
+make help               # Show all available commands
 ```
 
 ## Demo & Simulation
 
 ```bash
 make demo               # Full demo: services + migrations + data + webhooks
+make demo-investor      # Investor demo: all services + Grafana + 30-day data
 make demo-data          # Generate 30 days of synthetic transaction data
 make demo-data-week     # Quick: 7 days of synthetic data
 make webhook            # Fire a single matched pair (Paystack + Flutterwave)
@@ -173,6 +178,16 @@ make webhook-batch      # Fire 20 mixed webhook scenarios
 make webhook-unmatched  # Fire an unmatched event (creates discrepancy)
 make webhook-duplicate  # Fire a duplicate event (tests idempotency)
 ```
+
+## Dashboard
+
+```bash
+make dashboard-install  # Install Next.js dependencies
+make dashboard          # Start dashboard dev server (http://localhost:3000)
+make dashboard-build    # Production build
+```
+
+**7 screens:** Executive Overview · Discrepancy Management · PSP Health · CBN Reports · Settings · Onboarding Wizard · Demo Mode (graceful fallback)
 
 ---
 
@@ -207,18 +222,24 @@ mmr-engine/
 │   └── config.py               # Pydantic Settings — all env vars typed
 ├── alembic/versions/           # 13 database migrations
 ├── dbt_project/                # Silver → Gold SQL transforms
-├── tests/                      # 123+ tests across 6 suites
-│   ├── unit/                   #   Matching, discrepancy, PII, FX, connectors
+├── dashboard/                  # Next.js 15 executive dashboard (30+ files)
+│   ├── app/(dashboard)/        #   6 dashboard pages
+│   ├── app/onboarding/         #   4-step onboarding wizard
+│   ├── components/             #   Sidebar, KPI cards, charts, stepper, demo banner
+│   └── lib/                    #   API client, data hooks, demo data, utilities
+├── tests/                      # 160+ tests across 9 suites
+│   ├── unit/                   #   Matching, discrepancy, PII, FX, CBN, connectors
 │   ├── contracts/              #   Bronze + Silver Pandera schemas
-│   └── integration/            #   Full pipeline with real infra
+│   └── integration/            #   API routes + pipeline flows
 ├── scripts/                    # Tooling
 │   ├── security_check.py       #   CI prohibited pattern scanner
 │   ├── simulate_webhooks.py    #   Webhook scenario simulator
 │   └── generate_demo_data.py   #   Synthetic data generator
 ├── infra/                      # Prometheus rules, Grafana dashboards
-├── docs/                       # 10 specification documents (440KB+)
-├── docker-compose.yml          # 10-service stack
-├── Dockerfile                  # Multi-stage build
+├── docs/                       # 11 specification documents (530KB+)
+├── docker-compose.yml          # 11-service stack
+├── Dockerfile                  # Multi-stage build (Python)
+├── dashboard/Dockerfile        # Multi-stage build (Node.js)
 └── Makefile                    # Developer commands
 ```
 
@@ -250,7 +271,7 @@ mmr-engine/
 ## Test Suite
 
 ```
-123 tests passing across 6 suites:
+160+ tests passing across 9 suites:
 
   contracts/test_bronze_schemas.py   ·····   9 tests  — Bronze structural validation
   contracts/test_silver_schema.py    ····  27 tests  — Silver business rules + PII + FX
@@ -258,6 +279,9 @@ mmr-engine/
   unit/test_discrepancy.py           ····  22 tests  — Discrepancy classification
   unit/test_pii_masking.py           ····  23 tests  — PII masking (NUBAN, BVN, names)
   unit/test_connectors.py            ····  18 tests  — PSP webhook validation
+  unit/test_cbn_report.py            ····  11 tests  — CBN daily return generator
+  integration/test_api_routes.py     ····  20 tests  — API endpoint validation
+  integration/test_pipeline_flow.py  ····  12 tests  — Pipeline normalisation + matching
 ```
 
 ## Security & Compliance
@@ -274,7 +298,7 @@ mmr-engine/
 
 ## Documentation
 
-10 specification documents (440KB+ of pre-engineering design):
+11 specification documents (530KB+ of pre-engineering design):
 
 | Document | Purpose |
 |----------|---------|
@@ -286,8 +310,37 @@ mmr-engine/
 | [API Specification](docs/API%20SPECIFICATION.md) | All endpoints, schemas, error codes |
 | [Data Governance](docs/DATA%20GOVERNANCE%20%26%20SECURITY.md) | Threat model, NDPR compliance, access controls |
 | [Quality Assurance](docs/QUALITY%20ASSURANCE.md) | 10 correctness properties, testing strategy |
+| [CDA](docs/CDA.md) | Credential & Deployment Architecture — 3 deployment models, migration paths |
 | [Threat Assessment](docs/RELEVANCE%20AND%20THREAT%20ASSESSMENT.md) | Competitive landscape, differentiation |
 | [GTM Strategy](docs/GTM_STRATEGY.md) | Data acquisition, commercial positioning |
+
+---
+
+## Service Ports
+
+| Service | Port | URL |
+|---------|------|-----|
+| Dashboard | 3000 | http://localhost:3000 |
+| API Gateway | 8000 | http://localhost:8000/docs |
+| Grafana | 3001 | http://localhost:3001 |
+| Prometheus | 9090 | http://localhost:9090 |
+| Prefect | 4200 | http://localhost:4200 |
+| MinIO Console | 9001 | http://localhost:9001 |
+| Redpanda Console | 8080 | http://localhost:8080 |
+
+---
+
+## Deployment Models
+
+See [CDA.md](docs/CDA.md) for the full credential and deployment architecture.
+
+| Model | Description | Target Client |
+|-------|-------------|---------------|
+| **Option A — Self-Hosted** | Client runs everything. Credentials never leave their infra. | Regulated entities, DevOps teams |
+| **Option B — Managed** | We run the system. AES-256-GCM encrypted credential vault. | SMEs, no-tech teams |
+| **Option C — Read-Only** | Credential scope discipline applied to both A and B. | All clients |
+
+> *"The reconciliation engine never needs write access to a PSP account. Ever."* — CDA §2
 
 ---
 
