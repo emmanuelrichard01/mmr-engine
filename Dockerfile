@@ -34,9 +34,7 @@ EXPOSE 8000
 CMD ["uvicorn", "src.api.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
-     "--workers", "2", \
-     "--log-config", "/dev/null"]
-     # Logging configured by structlog, not uvicorn's default logger
+     "--workers", "2"]
 
 
 # ── Worker stage ──────────────────────────────────────────────────────────────
