@@ -15,6 +15,10 @@ FROM python:3.12-slim AS base
 
 WORKDIR /app
 
+# Ensure src/ is importable as a Python package from /app
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
 # System dependencies shared across all stages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -52,7 +56,5 @@ COPY dbt_project/ ./dbt_project/
 FROM base AS migrations
 COPY alembic/ ./alembic/
 COPY alembic.ini .
-COPY src/config.py ./src/config.py
-COPY src/__init__.py ./src/__init__.py
+COPY src/ ./src/
 # CMD provided by compose: alembic upgrade head
-
