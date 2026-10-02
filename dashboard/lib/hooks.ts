@@ -1,278 +1,189 @@
-// ─── Data Hooks ──────────────────────────────────────────────────────────────
-// Custom React hooks that try the live API first, then fall back to demo data.
-// Each hook returns { data, isLoading, error, isUsingDemoData }.
-
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+// ─── Data hooks ──────────────────────────────────────────────────────────────
+// Real API data or a real error — never a silent substitute. Hooks re-fetch
+// whenever their key (the serialised request parameters) changes, cancel
+// stale requests, and optionally poll while the tab is visible.
+
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  fetchReconciliationSummary,
-  fetchDiscrepancies as apiFetchDiscrepancies,
+  ApiError,
+  fetchDailyReports,
+  fetchDiscrepancies,
+  fetchDiscrepancyEvents,
   fetchExposure,
-  fetchHealthReady,
-  resolveDiscrepancy as apiResolveDiscrepancy,
-  isAPIReachable,
-  type ReconciliationSummary,
-  type APIDiscrepancy,
-  type ExposureResponse,
-  type HealthCheck,
+  fetchPspHealth,
+  fetchReadiness,
+  fetchSummary,
+  fetchTrend,
+  resolveDiscrepancy,
+  toApiError,
+  type DiscrepancyFilters,
+  type ResolveOutcome,
+  type ResolveResponse,
 } from './api';
-import {
-  getKPISummary,
-  getDailySummaries,
-  getDiscrepancies as getDemoDiscrepancies,
-  getPSPHealth,
-  getFXRates,
-  type KPISummary,
-  type DailySummary,
-  type Discrepancy,
-  type PSPHealth,
-  type FXRate,
-} from './demo-data';
 
-// ─── Generic Data Hook ───────────────────────────────────────────────────────
-
-interface UseDataResult<T> {
+export interface QueryResult<T> {
   data: T | null;
+  error: ApiError | null;
+  /** True until the first response (or error) for the current key. */
   isLoading: boolean;
-  error: Error | null;
-  isUsingDemoData: boolean;
+  /** True while re-fetching a key that already has data. */
+  isRefreshing: boolean;
+  /** Epoch ms of the last successful response. */
+  updatedAt: number | null;
   refetch: () => void;
 }
 
-function useData<T>(
-  fetcher: () => Promise<T>,
-  fallback: () => T,
-  refreshInterval?: number
-): UseDataResult<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [isUsingDemoData, setIsUsingDemoData] = useState(false);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+interface QueryState<T> {
+  key: string;
+  data: T | null;
+  error: ApiError | null;
+  pending: boolean;
+  updatedAt: number | null;
+}
 
-  const fetchData = useCallback(async () => {
-    try {
-      const result = await fetcher();
-      setData(result);
-      setIsUsingDemoData(false);
-      setError(null);
-    } catch (err) {
-      // Fall back to demo data
-      setData(fallback());
-      setIsUsingDemoData(true);
-      setError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      setIsLoading(false);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+function useQuery<T>(
+  key: string,
+  fetcher: (signal: AbortSignal) => Promise<T>,
+  options: { refreshMs?: number } = {},
+): QueryResult<T> {
+  const { refreshMs } = options;
+  const fetcherRef = useRef(fetcher);
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
+
+  const [tick, setTick] = useState(0);
+  const [state, setState] = useState<QueryState<T>>({
+    key,
+    data: null,
+    error: null,
+    pending: true,
+    updatedAt: null,
+  });
 
   useEffect(() => {
-    fetchData();
-
-    if (refreshInterval) {
-      intervalRef.current = setInterval(fetchData, refreshInterval);
-    }
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-    };
-  }, [fetchData, refreshInterval]);
-
-  return { data, isLoading, error, isUsingDemoData, refetch: fetchData };
-}
-
-// ─── API Connectivity ────────────────────────────────────────────────────────
-
-export function useAPIStatus() {
-  const [isConnected, setIsConnected] = useState<boolean | null>(null);
+    const controller = new AbortController();
+    setState((prev) =>
+      prev.key === key
+        ? { ...prev, pending: true }
+        : { key, data: null, error: null, pending: true, updatedAt: null },
+    );
+    fetcherRef.current(controller.signal).then(
+      (data) => {
+        if (controller.signal.aborted) return;
+        setState({ key, data, error: null, pending: false, updatedAt: Date.now() });
+      },
+      (err: unknown) => {
+        if (controller.signal.aborted) return;
+        setState((prev) => ({
+          key,
+          data: prev.key === key ? prev.data : null,
+          updatedAt: prev.key === key ? prev.updatedAt : null,
+          error: toApiError(err),
+          pending: false,
+        }));
+      },
+    );
+    return () => controller.abort();
+  }, [key, tick]);
 
   useEffect(() => {
-    isAPIReachable().then(setIsConnected);
-    const interval = setInterval(() => {
-      isAPIReachable().then(setIsConnected);
-    }, 30_000); // Check every 30s
-    return () => clearInterval(interval);
-  }, []);
+    if (!refreshMs) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') setTick((t) => t + 1);
+    }, refreshMs);
+    return () => window.clearInterval(id);
+  }, [refreshMs]);
 
-  return isConnected;
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
+
+  const current = state.key === key;
+  return {
+    data: current ? state.data : null,
+    error: current ? state.error : null,
+    isLoading: !current || (state.pending && state.data === null && state.error === null),
+    isRefreshing: current && state.pending && (state.data !== null || state.error !== null),
+    updatedAt: current ? state.updatedAt : null,
+    refetch,
+  };
 }
 
-// ─── KPI Summary ─────────────────────────────────────────────────────────────
+// ─── Endpoint hooks ──────────────────────────────────────────────────────────
 
-export function useKPISummary(): UseDataResult<KPISummary> {
-  return useData<KPISummary>(
-    async () => {
-      // Try to build KPI from API endpoints
-      const [summary, exposure] = await Promise.all([
-        fetchReconciliationSummary(),
-        fetchExposure(),
-      ]);
+const MINUTE = 60_000;
 
-      const demoSummaries = getDailySummaries();
-      const recentSummaries = demoSummaries.slice(-7);
-
-      return {
-        matchRate: {
-          value: summary.match_rate_pct,
-          delta: 0, // Would need yesterday's data from API
-          trend: recentSummaries.map((s) => s.matchRate),
-        },
-        openExposure: {
-          value: exposure.total_open_exposure_ngn,
-          delta: 0,
-          trend: recentSummaries.map((s) => s.exposure),
-        },
-        pendingIssues: {
-          value: summary.discrepancies.reduce((sum, d) => sum + d.count, 0),
-          delta: 0,
-          trend: recentSummaries.map((s) => s.discrepancyCount),
-        },
-        txnsToday: {
-          value: summary.total_transactions,
-          delta: 0,
-          trend: recentSummaries.map((s) => s.transactionsProcessed),
-        },
-      };
-    },
-    () => getKPISummary(),
-    30_000 // Refresh every 30 seconds
-  );
+export function useReadiness() {
+  return useQuery('readiness', (s) => fetchReadiness(s), { refreshMs: 30_000 });
 }
 
-// ─── Daily Summaries ─────────────────────────────────────────────────────────
-
-export function useDailySummaries(): UseDataResult<DailySummary[]> {
-  return useData<DailySummary[]>(
-    async () => {
-      // Daily summaries require aggregation not available from API yet
-      // Fall through to demo data
-      throw new Error('Daily summaries API not yet implemented');
-    },
-    () => getDailySummaries()
-  );
+export function useSummary() {
+  return useQuery('summary', (s) => fetchSummary(s), { refreshMs: MINUTE });
 }
 
-// ─── Discrepancies ───────────────────────────────────────────────────────────
-
-export function useDiscrepancies(filters?: {
-  severity?: string;
-  status?: string;
-  psp?: string;
-}): UseDataResult<Discrepancy[]> {
-  return useData<Discrepancy[]>(
-    async () => {
-      const result = await apiFetchDiscrepancies({
-        severity: filters?.severity !== 'all' ? filters?.severity : undefined,
-        status: filters?.status !== 'all' ? filters?.status : undefined,
-        limit: 100,
-      });
-
-      // Map API response to dashboard Discrepancy type
-      return result.discrepancies.map((d) => ({
-        id: `DIS-${String(d.id).padStart(4, '0')}`,
-        type: d.discrepancy_type as Discrepancy['type'],
-        severity: d.severity as Discrepancy['severity'],
-        psp: d.psp_name as Discrepancy['psp'],
-        amount: d.estimated_exposure_ngn,
-        currency: 'NGN',
-        reference: d.psp_transaction_ref || `TXN-${d.transaction_id}`,
-        beneficiaryName: '••• (masked)',
-        status: d.status as Discrepancy['status'],
-        createdAt: d.detected_at,
-        ageHours: Math.round(
-          (Date.now() - new Date(d.detected_at).getTime()) / 3600000
-        ),
-      }));
-    },
-    () => {
-      let items = getDemoDiscrepancies();
-      if (filters?.severity && filters.severity !== 'all') {
-        items = items.filter((d) => d.severity === filters.severity);
-      }
-      if (filters?.status && filters.status !== 'all') {
-        items = items.filter((d) => d.status === filters.status);
-      }
-      if (filters?.psp && filters.psp !== 'all') {
-        items = items.filter((d) => d.psp === filters.psp);
-      }
-      return items;
-    }
-  );
+export function useTrend(days: number) {
+  return useQuery(`trend:${days}`, (s) => fetchTrend(days, s), { refreshMs: 5 * MINUTE });
 }
 
-// ─── PSP Health ──────────────────────────────────────────────────────────────
-
-export function usePSPHealth(): UseDataResult<PSPHealth[]> {
-  return useData<PSPHealth[]>(
-    async () => {
-      const health = await fetchHealthReady();
-      // Map health check to PSPHealth format
-      // The health endpoint doesn't have per-PSP data yet
-      // Fall through to demo data
-      if (health.status !== 'healthy') {
-        throw new Error('Service degraded');
-      }
-      throw new Error('Per-PSP health API not yet implemented');
-    },
-    () => getPSPHealth(),
-    60_000 // Refresh every 60 seconds
-  );
+export function usePspHealth() {
+  return useQuery('psp-health', (s) => fetchPspHealth(s), { refreshMs: MINUTE });
 }
 
-// ─── Exposure ────────────────────────────────────────────────────────────────
-
-export function useExposure(): UseDataResult<ExposureResponse> {
-  return useData<ExposureResponse>(
-    () => fetchExposure(),
-    () => ({
-      total_open_exposure_ngn: 0,
-      by_psp_and_type: [],
-      generated_at: new Date().toISOString(),
-    }),
-    60_000
-  );
+export function useExposure() {
+  return useQuery('exposure', (s) => fetchExposure(s), { refreshMs: MINUTE });
 }
 
-// ─── FX Rates ────────────────────────────────────────────────────────────────
-
-export function useFXRates(): UseDataResult<FXRate[]> {
-  return useData<FXRate[]>(
-    async () => {
-      // FX rate API not yet exposed via REST
-      throw new Error('FX rate API not yet implemented');
-    },
-    () => getFXRates()
-  );
+/** Filters are part of the query key, so any change triggers a fresh API request. */
+export function useDiscrepancies(filters: DiscrepancyFilters, options: { refreshMs?: number } = {}) {
+  const key = `discrepancies:${filters.status}:${filters.severity ?? ''}:${filters.psp_name ?? ''}:${filters.limit}:${filters.offset}`;
+  return useQuery(key, (s) => fetchDiscrepancies(filters, s), options);
 }
 
-// ─── Resolve Discrepancy ─────────────────────────────────────────────────────
+export function useDiscrepancyEvents(id: number) {
+  return useQuery(`discrepancy-events:${id}`, (s) => fetchDiscrepancyEvents(id, s));
+}
+
+export function useDailyReports(params: { limit: number; offset: number }) {
+  return useQuery(`reports:${params.limit}:${params.offset}`, (s) => fetchDailyReports(params, s));
+}
+
+// ─── Mutations ───────────────────────────────────────────────────────────────
 
 export function useResolveDiscrepancy() {
   const [isResolving, setIsResolving] = useState(false);
-  const [resolveError, setResolveError] = useState<Error | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
 
-  const resolve = useCallback(
-    async (id: number, note: string): Promise<boolean> => {
-      setIsResolving(true);
-      setResolveError(null);
-      try {
-        await apiResolveDiscrepancy(id, note);
-        return true;
-      } catch (err) {
-        setResolveError(
-          err instanceof Error ? err : new Error(String(err))
-        );
-        return false;
-      } finally {
-        setIsResolving(false);
-      }
-    },
-    []
-  );
+  const resolve = useCallback(async (id: number, note: string, outcome: ResolveOutcome): Promise<ResolveResponse | null> => {
+    setIsResolving(true);
+    setError(null);
+    try {
+      return await resolveDiscrepancy(id, note, outcome);
+    } catch (err) {
+      setError(toApiError(err));
+      return null;
+    } finally {
+      setIsResolving(false);
+    }
+  }, []);
 
-  return { resolve, isResolving, resolveError };
+  const reset = useCallback(() => setError(null), []);
+
+  return { resolve, isResolving, error, reset };
+}
+
+// ─── Clock ───────────────────────────────────────────────────────────────────
+
+/**
+ * Current time for relative labels ("6h ago"). Null during server render and
+ * the first client render, so markup never differs between the two.
+ */
+export function useNow(intervalMs = 60_000): number | null {
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }
