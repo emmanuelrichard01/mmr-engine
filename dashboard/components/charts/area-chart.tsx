@@ -1,140 +1,118 @@
-"use client";
+'use client';
 
-import {
-  AreaChart as RechartsAreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
-// ── Types ────────────────────────────────────────────────────────────
-
-interface AreaChartWrapperProps {
-  data: Record<string, unknown>[];
-  dataKey: string;
-  xKey: string;
-  color?: string;
-  gradientId?: string;
-  yDomain?: [number | string, number | string];
-  tooltipFormatter?: (value: number) => string;
-  xTickFormatter?: (value: string) => string;
-  height?: number;
+interface TooltipPayload {
+  value: number | null;
+  payload: Record<string, unknown>;
 }
 
-// ── Custom Tooltip ───────────────────────────────────────────────────
-
-function CustomTooltip({
+function ChartTooltip({
   active,
   payload,
   label,
-  formatter,
+  valueFormatter,
+  labelFormatter,
+  extra,
 }: {
   active?: boolean;
-  payload?: { value: number }[];
+  payload?: TooltipPayload[];
   label?: string;
-  formatter?: (value: number) => string;
+  valueFormatter: (value: number | null) => string;
+  labelFormatter: (label: string) => string;
+  extra?: (row: Record<string, unknown>) => string | null;
 }) {
   if (!active || !payload?.length) return null;
-
+  const row = payload[0].payload;
+  const extraText = extra ? extra(row) : null;
   return (
-    <div className="bg-[var(--color-surface-0)] border border-[var(--color-surface-200)] rounded-lg px-3 py-2.5 shadow-lg">
-      <p className="text-overline text-[10px] mb-1">{label}</p>
-      <p className="text-[14px] font-bold text-[var(--color-surface-900)] tabular-nums">
-        {formatter ? formatter(payload[0].value) : payload[0].value}
+    <div className="chart-tooltip">
+      <p className="text-caption">{label ? labelFormatter(label) : ''}</p>
+      <p className="text-financial text-[14px] font-semibold text-[var(--color-surface-900)]">
+        {valueFormatter(payload[0].value)}
       </p>
+      {extraText && <p className="text-caption">{extraText}</p>}
     </div>
   );
 }
 
-// ── Component ────────────────────────────────────────────────────────
+export interface AreaChartProps<T extends object> {
+  data: T[];
+  dataKey: keyof T & string;
+  xKey: keyof T & string;
+  /** Accessible description of what the chart shows. */
+  ariaLabel: string;
+  yDomain?: [number, number];
+  valueFormatter: (value: number | null) => string;
+  xTickFormatter: (value: string) => string;
+  yTickFormatter?: (value: number) => string;
+  tooltipExtra?: (row: T) => string | null;
+  height?: number;
+}
 
-export function AreaChartWrapper({
+export function AreaChartWrapper<T extends object>({
   data,
   dataKey,
   xKey,
-  color = "var(--color-primary-500)",
-  gradientId = "area-gradient",
+  ariaLabel,
   yDomain,
-  tooltipFormatter,
+  valueFormatter,
   xTickFormatter,
-  height = 260,
-}: AreaChartWrapperProps) {
+  yTickFormatter,
+  tooltipExtra,
+  height = 240,
+}: AreaChartProps<T>) {
+  const tick = { fontSize: 12, fill: 'var(--color-surface-500)' };
   return (
-    <ResponsiveContainer width="100%" height={height}>
-      <RechartsAreaChart
-        data={data}
-        margin={{ top: 4, right: 4, bottom: 0, left: -20 }}
-      >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity={0.12} />
-            <stop offset="100%" stopColor={color} stopOpacity={0.0} />
-          </linearGradient>
-        </defs>
-
-        <CartesianGrid
-          stroke="var(--color-surface-200)"
-          strokeOpacity={0.6}
-          vertical={false}
-          strokeDasharray="none"
-        />
-
-        <XAxis
-          dataKey={xKey}
-          tickLine={false}
-          axisLine={false}
-          tick={{
-            fontSize: 11,
-            fill: "var(--color-surface-400)",
-            fontWeight: 500,
-          }}
-          tickFormatter={xTickFormatter}
-          dy={8}
-        />
-
-        <YAxis
-          domain={yDomain}
-          tickLine={false}
-          axisLine={false}
-          tick={{
-            fontSize: 11,
-            fill: "var(--color-surface-400)",
-            fontWeight: 500,
-          }}
-          dx={-4}
-        />
-
-        <Tooltip
-          content={
-            <CustomTooltip formatter={tooltipFormatter} />
-          }
-          cursor={{
-            stroke: "var(--color-surface-300)",
-            strokeOpacity: 0.5,
-            strokeWidth: 1,
-          }}
-        />
-
-        <Area
-          type="monotone"
-          dataKey={dataKey}
-          stroke={color}
-          strokeWidth={2}
-          fill={`url(#${gradientId})`}
-          dot={false}
-          activeDot={{
-            r: 4,
-            stroke: color,
-            strokeWidth: 2,
-            fill: "var(--color-surface-0)",
-          }}
-          animationDuration={1200}
-          animationEasing="ease-out"
-        />
-      </RechartsAreaChart>
-    </ResponsiveContainer>
+    <div role="img" aria-label={ariaLabel} style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+          <defs>
+            <linearGradient id="mmr-area-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--color-primary-500)" stopOpacity={0.14} />
+              <stop offset="100%" stopColor="var(--color-primary-500)" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke="var(--color-surface-200)" vertical={false} />
+          <XAxis
+            dataKey={xKey}
+            tickLine={false}
+            axisLine={false}
+            tick={tick}
+            tickFormatter={xTickFormatter}
+            minTickGap={24}
+            dy={6}
+          />
+          <YAxis
+            domain={yDomain}
+            tickLine={false}
+            axisLine={false}
+            tick={tick}
+            tickFormatter={yTickFormatter}
+            width={48}
+          />
+          <Tooltip
+            content={
+              <ChartTooltip
+                valueFormatter={valueFormatter}
+                labelFormatter={xTickFormatter}
+                extra={tooltipExtra as unknown as ((row: Record<string, unknown>) => string | null) | undefined}
+              />
+            }
+            cursor={{ stroke: 'var(--color-surface-300)', strokeWidth: 1 }}
+          />
+          <Area
+            type="monotone"
+            dataKey={dataKey}
+            stroke="var(--color-primary-500)"
+            strokeWidth={1.75}
+            fill="url(#mmr-area-fill)"
+            dot={false}
+            activeDot={{ r: 3.5, stroke: 'var(--color-primary-500)', strokeWidth: 2, fill: 'var(--color-surface-0)' }}
+            isAnimationActive={false}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   );
 }

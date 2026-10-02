@@ -1,235 +1,103 @@
-"use client";
+import type { ReactNode } from 'react';
+import { ArrowDownRight, ArrowUpRight, Minus } from 'lucide-react';
+import { Skeleton } from '@/components/page-header';
+import { cn } from '@/lib/utils';
 
-import { useEffect, useId, useState, type ReactNode } from "react";
-import { cn } from "@/lib/utils";
-import { ArrowUpRight, ArrowDownRight, Minus } from "lucide-react";
+export interface KpiDelta {
+  /** Signed value, used only to pick the arrow. */
+  value: number;
+  /** Pre-formatted with explicit units, e.g. "+0.4 pp" or "−120". */
+  label: string;
+  /** What the delta compares against, e.g. "vs 1 Oct". */
+  basis: string;
+  /** Volume-like metrics: direction is shown without a good/bad colour. */
+  neutral?: boolean;
+  /** For risk metrics a decrease is good. */
+  lowerIsBetter?: boolean;
+}
 
-// ── Color system (CSS-variable-based, auto dark mode) ─────────────────
+export interface KpiCardProps {
+  label: string;
+  value: string;
+  /** Short supporting line under the value. */
+  detail?: ReactNode;
+  delta?: KpiDelta | null;
+  /** Real series only; omitted when there is no history to show. */
+  sparkline?: number[];
+  sparklineLabel?: string;
+  loading?: boolean;
+  unavailable?: boolean;
+}
 
-const colorMap = {
-  indigo: {
-    iconBg: "color-mix(in srgb, #6366f1 10%, transparent)",
-    iconColor: "#4f46e5",
-    spark: "#6366f1",
-    accent: "var(--color-primary-500)",
-  },
-  emerald: {
-    iconBg: "color-mix(in srgb, #10b981 10%, transparent)",
-    iconColor: "#059669",
-    spark: "#10b981",
-    accent: "var(--color-success-500)",
-  },
-  amber: {
-    iconBg: "color-mix(in srgb, #f59e0b 10%, transparent)",
-    iconColor: "#d97706",
-    spark: "#f59e0b",
-    accent: "var(--color-warning-500)",
-  },
-  rose: {
-    iconBg: "color-mix(in srgb, #f43f5e 10%, transparent)",
-    iconColor: "#e11d48",
-    spark: "#f43f5e",
-    accent: "var(--color-danger-500)",
-  },
-} as const;
-
-export type KPIColor = keyof typeof colorMap;
-
-// ── Sparkline ─────────────────────────────────────────────────────────
-
-function Sparkline({
-  data,
-  color,
-  uniqueId,
-  width = 64,
-  height = 28,
-}: {
-  data: number[];
-  color: string;
-  uniqueId: string;
-  width?: number;
-  height?: number;
-}) {
-  if (!data || data.length < 2) return null;
-
+function Sparkline({ data, label }: { data: number[]; label: string }) {
+  if (data.length < 2) return null;
+  const width = 72;
+  const height = 24;
   const min = Math.min(...data);
   const max = Math.max(...data);
   const range = max - min || 1;
-  const padY = 2;
-
-  const pts = data.map((v, i) => {
+  const points = data.map((v, i) => {
     const x = (i / (data.length - 1)) * width;
-    const y = height - padY - ((v - min) / range) * (height - padY * 2);
+    const y = height - 2 - ((v - min) / range) * (height - 4);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
-
-  const fillPts = [`0,${height}`, ...pts, `${width},${height}`].join(" ");
-  const gradId = `spark-${uniqueId}`;
-
   return (
-    <svg
-      width={width}
-      height={height}
-      className="shrink-0"
-      aria-hidden="true"
-    >
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stopColor={color} stopOpacity="0.18" />
-          <stop offset="100%" stopColor={color} stopOpacity="0"    />
-        </linearGradient>
-      </defs>
-      <polygon points={fillPts} fill={`url(#${gradId})`} />
+    <svg width={width} height={height} className="shrink-0 overflow-visible" role="img" aria-label={label}>
       <polyline
-        points={pts.join(" ")}
+        points={points.join(' ')}
         fill="none"
-        stroke={color}
+        stroke="var(--color-surface-500)"
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
-        opacity="0.8"
       />
-      {/* Terminal dot */}
-      {(() => {
-        const last = pts[pts.length - 1].split(",");
-        return (
-          <circle
-            cx={parseFloat(last[0])}
-            cy={parseFloat(last[1])}
-            r="2.5"
-            fill={color}
-          />
-        );
-      })()}
     </svg>
   );
 }
 
-// ── Props ─────────────────────────────────────────────────────────────
+export function KpiCard({ label, value, detail, delta, sparkline, sparklineLabel, loading, unavailable }: KpiCardProps) {
+  if (loading) {
+    return (
+      <div className="card flex min-h-[116px] flex-col gap-3" aria-busy="true">
+        <span className="text-caption">{label}</span>
+        <Skeleton className="h-7 w-28" />
+        <Skeleton className="h-3 w-20" />
+      </div>
+    );
+  }
 
-export interface KPICardProps {
-  title: string;
-  value: string;
-  delta: number;
-  deltaLabel?: string;
-  trend: number[];
-  color: KPIColor;
-  icon: ReactNode;
-  index?: number;
-  /** Hint to the delta logic — risk/cost metrics where lower is better */
-  invertDelta?: boolean;
-}
-
-// ── Component ─────────────────────────────────────────────────────────
-
-export function KPICard({
-  title,
-  value,
-  delta,
-  deltaLabel = "vs yesterday",
-  trend,
-  color,
-  icon,
-  index = 0,
-  invertDelta,
-}: KPICardProps) {
-  const [mounted, setMounted] = useState(false);
-  const uid = useId(); // Stable, unique — no SVG gradient ID collision
-  useEffect(() => setMounted(true), []);
-
-  const palette = colorMap[color];
-
-  const isNeutral = delta === 0;
-  const isPositive = delta > 0;
-
-  // Lower is better for cost/risk metrics
-  const lowerIsBetter =
-    invertDelta ?? (title === "Open Exposure" || title === "Pending Issues");
-
-  const isGood = isNeutral
-    ? false
-    : lowerIsBetter
-    ? delta < 0   // lower is good
-    : delta > 0;  // higher is good
+  const direction = !delta || delta.value === 0 ? 'flat' : delta.value > 0 ? 'up' : 'down';
+  const good =
+    direction === 'flat' || delta?.neutral ? null : delta?.lowerIsBetter ? direction === 'down' : direction === 'up';
+  const DeltaIcon = direction === 'up' ? ArrowUpRight : direction === 'down' ? ArrowDownRight : Minus;
 
   return (
-    <div
-      className={cn(
-        // No hover-lift translateY — financial data doesn't bounce
-        "card relative overflow-hidden flex flex-col gap-3",
-        mounted ? "animate-fade-in" : "opacity-0"
-      )}
-      style={{ animationDelay: `${index * 0.06}s` }}
-    >
-      {/* ── Header: icon + label + sparkline ── */}
+    <div className="card flex min-h-[116px] flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2">
-          {/* Icon */}
-          <div
-            className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
-            style={{ background: palette.iconBg }}
-          >
-            <span
-              className="[&>svg]:w-3.5 [&>svg]:h-3.5"
-              style={{ color: palette.iconColor }}
-            >
-              {icon}
-            </span>
-          </div>
-
-          {/* Label */}
-          <p className="text-[12px] font-medium text-[var(--color-surface-500)] leading-none">
-            {title}
-          </p>
-        </div>
-
-        {/* Sparkline — right-aligned, subtle */}
-        <Sparkline
-          data={trend}
-          color={palette.spark}
-          uniqueId={uid}
-          width={56}
-          height={24}
-        />
+        <span className="text-caption">{label}</span>
+        {sparkline && !unavailable && <Sparkline data={sparkline} label={sparklineLabel ?? `${label} trend`} />}
       </div>
-
-      {/* ── Value ── */}
-      <div>
-        <p
-          className="text-[26px] font-bold tracking-tight text-[var(--color-surface-900)] leading-none"
-          style={{ fontVariantNumeric: "tabular-nums" }}
-        >
-          {value}
-        </p>
-
-        {/* ── Delta ── */}
-        <div className="flex items-center gap-1.5 mt-2">
+      <p className="text-financial text-[26px] font-semibold leading-none tracking-tight text-[var(--color-surface-900)]">
+        {unavailable ? '—' : value}
+      </p>
+      <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+        {delta && !unavailable && (
           <span
             className={cn(
-              "inline-flex items-center gap-0.5 text-[11px] font-semibold",
-              isNeutral
-                ? "text-[var(--color-surface-400)]"
-                : isGood
-                ? "text-[var(--color-success-600)]"
-                : "text-[var(--color-danger-500)]"
+              'inline-flex items-center gap-0.5 font-medium tabular-nums',
+              good === null
+                ? 'text-[var(--color-surface-600)]'
+                : good
+                  ? 'text-[var(--color-success-600)]'
+                  : 'text-[var(--color-danger-600)]',
             )}
           >
-            {isNeutral ? (
-              <Minus className="w-3 h-3" />
-            ) : isPositive ? (
-              <ArrowUpRight className="w-3 h-3" />
-            ) : (
-              <ArrowDownRight className="w-3 h-3" />
-            )}
-            <span>
-              {Math.abs(delta)}
-              {title === "Match Rate" ? "%" : ""}
-            </span>
+            <DeltaIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            {delta.label}
+            <span className="font-normal text-[var(--color-surface-500)]">{delta.basis}</span>
           </span>
-          <span className="text-[11px] text-[var(--color-surface-400)]">
-            {deltaLabel}
-          </span>
-        </div>
+        )}
+        {detail && <span className="text-[var(--color-surface-500)]">{detail}</span>}
       </div>
     </div>
   );
