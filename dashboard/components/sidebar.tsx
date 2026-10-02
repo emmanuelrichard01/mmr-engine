@@ -3,268 +3,204 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  LayoutDashboard,
-  AlertTriangle,
   Activity,
-  FileBarChart,
-  Settings,
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
-  LogOut,
-  TrendingUp,
+  FileBarChart,
+  LayoutDashboard,
+  Server,
+  X,
 } from 'lucide-react';
+import { ReadinessIndicator } from '@/components/readiness-indicator';
+import { useModal } from '@/lib/use-modal';
 import { cn } from '@/lib/utils';
 
-// ── Navigation config ─────────────────────────────────────────────────
-
-const NAV_ITEMS = [
-  { label: 'Overview',      href: '/',              icon: LayoutDashboard },
-  { label: 'Discrepancies', href: '/discrepancies',  icon: AlertTriangle   },
-  { label: 'PSP Health',    href: '/psp-health',     icon: Activity        },
-  { label: 'Reports',       href: '/reports',        icon: FileBarChart    },
+export const NAV_ITEMS = [
+  { label: 'Overview', href: '/', icon: LayoutDashboard },
+  { label: 'Discrepancies', href: '/discrepancies', icon: AlertTriangle },
+  { label: 'PSP health', href: '/psp-health', icon: Activity },
+  { label: 'Daily return', href: '/reports', icon: FileBarChart, note: 'Experimental' },
+  { label: 'System', href: '/system', icon: Server },
 ] as const;
 
-const WORKSPACE_ITEMS = [
-  { label: 'Investor Demo', href: '/investor', icon: TrendingUp, accent: true },
-  { label: 'Settings',      href: '/settings', icon: Settings               },
-] as const;
+type NavItemConfig = (typeof NAV_ITEMS)[number];
+
+function isActive(pathname: string, href: string) {
+  return href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`);
+}
 
 // ── Sidebar ───────────────────────────────────────────────────────────
 
 interface SidebarProps {
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle?: () => void;
+  onNavigate?: () => void;
   className?: string;
 }
 
-export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, onNavigate, className }: SidebarProps) {
   const pathname = usePathname();
-  const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href);
 
   return (
-    <aside
+    <div
       className={cn(
-        'flex h-screen flex-col shrink-0 select-none',
-        'border-r border-[var(--color-surface-200)]',
-        'bg-[var(--color-surface-0)]',
-        'transition-[width] duration-250 ease-out',
-        collapsed ? 'w-[60px]' : 'w-[232px]',
-        className
+        'flex h-full shrink-0 flex-col border-r border-[var(--color-surface-200)] bg-[var(--color-surface-0)]',
+        'transition-[width] duration-200 ease-out',
+        collapsed ? 'w-[64px]' : 'w-[232px]',
+        className,
       )}
     >
-      {/* ── Brand ────────────────────────────────────────────────── */}
-      <div className={cn(
-        'flex h-[56px] shrink-0 items-center border-b border-[var(--color-surface-200)]',
-        collapsed ? 'px-3 justify-center' : 'px-4'
-      )}>
+      {/* Brand */}
+      <div
+        className={cn(
+          'flex h-[56px] shrink-0 items-center border-b border-[var(--color-surface-200)]',
+          collapsed ? 'justify-center px-3' : 'px-4',
+        )}
+      >
         <Link
           href="/"
-          className="flex items-center gap-2.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-500)] p-1 -ml-1"
+          onClick={onNavigate}
+          className="focus-ring -ml-1 flex items-center gap-2.5 rounded-md p-1"
+          aria-label="MMR overview"
         >
-          {/* Logo mark */}
-          <div className="w-7 h-7 rounded-md bg-[var(--color-surface-900)] flex items-center justify-center shrink-0">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--color-surface-900)]">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
                 d="M2 13V3L5.5 8.5L8 5L10.5 8.5L14 3V13"
-                stroke="white"
+                stroke="var(--color-surface-0)"
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
             </svg>
-          </div>
-
+          </span>
           {!collapsed && (
-            <div className="min-w-0 animate-fade-in">
-              <p className="text-[13px] font-bold text-[var(--color-surface-900)] tracking-tight leading-none">
+            <span className="min-w-0">
+              <span className="block text-[13px] font-semibold leading-none tracking-tight text-[var(--color-surface-900)]">
                 MMR Engine
-              </p>
-              <p className="text-[11px] font-medium text-[var(--color-surface-400)] leading-none mt-1 truncate">
-                by Emmanuel Richard
-              </p>
-            </div>
+              </span>
+              <span className="mt-1 block truncate text-[12px] leading-none text-[var(--color-surface-500)]">
+                Reconciliation console
+              </span>
+            </span>
           )}
         </Link>
       </div>
 
-      {/* ── Primary Navigation ────────────────────────────────────── */}
-      <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0.5">
-
-        {/* Main items */}
-        <div className="space-y-0.5">
-          {NAV_ITEMS.map((item) => {
-            const active = isActive(item.href);
-            return (
-              <NavItem
-                key={item.href}
-                item={item}
-                active={active}
-                collapsed={collapsed}
-              />
-            );
-          })}
-        </div>
-
-        {/* Section divider */}
-        <div className={cn(
-          'pt-4 mt-3 border-t border-[var(--color-surface-200)]',
-          'space-y-0.5'
-        )}>
-          {!collapsed && (
-            <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--color-surface-300)]">
-              Workspace
-            </p>
-          )}
-          {WORKSPACE_ITEMS.map((item) => {
-            const active = isActive(item.href);
-            return (
-              <NavItem
-                key={item.href}
-                item={item}
-                active={active}
-                collapsed={collapsed}
-              />
-            );
-          })}
-        </div>
+      {/* Navigation */}
+      <nav aria-label="Main" className="flex-1 overflow-y-auto px-2 py-3">
+        <ul className="space-y-0.5">
+          {NAV_ITEMS.map((item) => (
+            <li key={item.href}>
+              <NavItem item={item} active={isActive(pathname, item.href)} collapsed={collapsed} onNavigate={onNavigate} />
+            </li>
+          ))}
+        </ul>
       </nav>
 
-      {/* ── Bottom ───────────────────────────────────────────────── */}
-      <div className="shrink-0 border-t border-[var(--color-surface-200)] p-2 space-y-0.5">
-        {/* Logout */}
-        <button
-          onClick={() => {
-            if (typeof window !== 'undefined') {
-              localStorage.removeItem('mmr-onboarded');
-              window.location.href = '/onboarding';
-            }
-          }}
-          className={cn(
-            'flex w-full items-center gap-2.5 rounded-md px-3 py-2',
-            'text-[12px] font-medium text-[var(--color-surface-500)]',
-            'hover:bg-[var(--color-danger-50)] hover:text-[var(--color-danger-600)]',
-            'transition-colors duration-150 outline-none',
-            'focus-visible:ring-2 focus-visible:ring-[var(--color-danger-500)]',
-            collapsed && 'justify-center px-0'
-          )}
-          title={collapsed ? 'Logout' : undefined}
-        >
-          <LogOut className="h-[14px] w-[14px] shrink-0" strokeWidth={2} />
-          {!collapsed && <span>Logout</span>}
-        </button>
-
-        {/* Collapse toggle */}
-        <button
-          onClick={onToggle}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-md px-3 py-2',
-            'text-[12px] font-medium text-[var(--color-surface-400)]',
-            'hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-700)]',
-            'transition-colors duration-150 outline-none',
-            'focus-visible:ring-2 focus-visible:ring-[var(--color-primary-500)]',
-            collapsed ? 'justify-center px-0' : 'justify-between'
-          )}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          {collapsed ? (
-            <ChevronRight className="h-[14px] w-[14px]" strokeWidth={2} />
-          ) : (
-            <>
-              <span>Collapse</span>
-              <ChevronLeft className="h-[14px] w-[14px]" strokeWidth={2} />
-            </>
-          )}
-        </button>
+      {/* Footer */}
+      <div className="shrink-0 space-y-1 border-t border-[var(--color-surface-200)] p-2">
+        <ReadinessIndicator collapsed={collapsed} />
+        {onToggle && (
+          <button
+            type="button"
+            onClick={onToggle}
+            className={cn(
+              'focus-ring flex w-full items-center gap-2 rounded-md px-3 py-2 text-[12px] font-medium',
+              'text-[var(--color-surface-500)] transition-colors hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-800)]',
+              collapsed ? 'justify-center px-0' : 'justify-between',
+            )}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? (
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <>
+                <span>Collapse</span>
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              </>
+            )}
+          </button>
+        )}
       </div>
-    </aside>
+    </div>
   );
 }
 
-// ── NavItem ───────────────────────────────────────────────────────────
-
-interface NavItemProps {
-  item: { label: string; href: string; icon: typeof LayoutDashboard; accent?: boolean };
+function NavItem({
+  item,
+  active,
+  collapsed,
+  onNavigate,
+}: {
+  item: NavItemConfig;
   active: boolean;
   collapsed: boolean;
-}
-
-function NavItem({ item, active, collapsed }: NavItemProps) {
+  onNavigate?: () => void;
+}) {
+  const Icon = item.icon;
+  const note = 'note' in item ? item.note : undefined;
   return (
     <Link
       href={item.href}
+      onClick={onNavigate}
+      aria-current={active ? 'page' : undefined}
       title={collapsed ? item.label : undefined}
       className={cn(
-        'relative flex items-center gap-2.5 rounded-md px-3 py-[7px]',
-        'text-[13px] font-medium transition-colors duration-150 outline-none',
-        'focus-visible:ring-2 focus-visible:ring-[var(--color-primary-500)]',
-        // Active state — clear visual weight, works in dark + light mode
+        'focus-ring relative flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] font-medium transition-colors',
         active
-          ? 'bg-[var(--color-surface-100)] text-[var(--color-surface-900)] font-semibold'
-          : item.accent
-          ? 'text-[var(--color-surface-700)] hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-900)]'
-          : 'text-[var(--color-surface-500)] hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-800)]',
-        collapsed && 'justify-center px-0 py-[9px]'
+          ? 'bg-[var(--color-surface-100)] text-[var(--color-surface-900)]'
+          : 'text-[var(--color-surface-600)] hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-900)]',
+        collapsed && 'justify-center px-0',
       )}
     >
-      {/* Active indicator — Linear-style left accent strip */}
       {active && (
-        <span className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] bg-[var(--color-primary-500)] rounded-r-full" />
+        <span
+          aria-hidden="true"
+          className="absolute bottom-1.5 left-0 top-1.5 w-[2px] rounded-r-full bg-[var(--color-surface-900)]"
+        />
       )}
-
-      <item.icon
-        strokeWidth={active ? 2.5 : 2}
-        className={cn(
-          'h-[15px] w-[15px] shrink-0 transition-colors duration-150',
-          active
-            ? 'text-[var(--color-surface-900)]'
-            : item.accent
-            ? 'text-[var(--color-surface-600)]'
-            : 'text-[var(--color-surface-400)]'
-        )}
-      />
-
-      {!collapsed && (
+      <Icon className="h-[15px] w-[15px] shrink-0" strokeWidth={active ? 2.25 : 2} aria-hidden="true" />
+      {collapsed ? (
+        <span className="sr-only">{item.label}</span>
+      ) : (
         <>
-          <span className="flex-1 truncate leading-none">{item.label}</span>
-
-          {/* Accent badge for Investor Demo */}
-          {item.accent && (
-            <span className={cn(
-              'text-[9px] font-bold tracking-widest px-1.5 py-0.5 rounded uppercase flex items-center gap-1',
-              active
-                ? 'bg-[var(--color-surface-200)] text-[var(--color-surface-700)]'
-                : 'bg-[var(--color-success-50)] text-[var(--color-success-600)] border border-[var(--color-success-100)]'
-            )}>
-              <span className="w-1 h-1 rounded-full bg-current animate-pulse-live" />
-              Live
-            </span>
-          )}
+          <span className="flex-1 truncate">{item.label}</span>
+          {note && <span className="nav-note">{note}</span>}
         </>
       )}
     </Link>
   );
 }
 
-// ── Mobile Overlay ────────────────────────────────────────────────────
+// ── Mobile navigation (modal) ─────────────────────────────────────────
 
-interface MobileSidebarProps {
-  open: boolean;
-  onClose: () => void;
-}
-
-export function MobileSidebar({ open, onClose }: MobileSidebarProps) {
+export function MobileSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const ref = useModal<HTMLDivElement>(open, onClose);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 lg:hidden">
+      <div className="absolute inset-0 bg-black/40" aria-hidden="true" onClick={onClose} />
       <div
-        className="fixed inset-0 bg-[var(--color-surface-900)]/25 backdrop-blur-[2px]"
-        onClick={onClose}
-      />
-      <Sidebar
-        collapsed={false}
-        onToggle={onClose}
-        className="fixed left-0 top-0 z-50 shadow-xl animate-fade-in"
-      />
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Navigation"
+        tabIndex={-1}
+        className="animate-slide-in-left absolute inset-y-0 left-0 flex outline-none"
+      >
+        <Sidebar collapsed={false} onNavigate={onClose} className="shadow-xl" />
+        <button
+          type="button"
+          onClick={onClose}
+          className="focus-ring absolute right-2 top-3 flex h-8 w-8 items-center justify-center rounded-md text-[var(--color-surface-600)] hover:bg-[var(--color-surface-100)]"
+          aria-label="Close navigation"
+        >
+          <X className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </div>
     </div>
   );
 }
