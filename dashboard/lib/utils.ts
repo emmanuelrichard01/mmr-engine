@@ -1,180 +1,114 @@
 import { type ClassValue, clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-// ─── Class Name Utility ───────────────────────────────────────────────────────
-
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
-// ─── Currency Formatting ──────────────────────────────────────────────────────
+// ─── Numbers ─────────────────────────────────────────────────────────────────
 
-const currencySymbols: Record<string, string> = {
-  NGN: '₦',
-  USD: '$',
-  GBP: '£',
-  KES: 'KSh',
+export function formatPercent(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return `${value.toFixed(digits)}%`;
+}
+
+export function formatCount(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  return value.toLocaleString('en-NG');
+}
+
+/** Signed difference in percentage points, e.g. "+0.4 pp". */
+export function formatPointsDelta(delta: number): string {
+  const rounded = Math.round(delta * 10) / 10;
+  if (rounded === 0) return '0.0 pp';
+  return `${rounded > 0 ? '+' : '−'}${Math.abs(rounded).toFixed(1)} pp`;
+}
+
+/** Signed integer difference, e.g. "+120". */
+export function formatCountDelta(delta: number): string {
+  if (delta === 0) return '0';
+  return `${delta > 0 ? '+' : '−'}${Math.abs(delta).toLocaleString('en-NG')}`;
+}
+
+// ─── Dates (all API timestamps are ISO-8601 UTC; display in Africa/Lagos) ─────
+
+const DISPLAY_TZ = 'Africa/Lagos';
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Numeric parts only, so output does not depend on the runtime's month names.
+const partsFmt = new Intl.DateTimeFormat('en-GB', {
+  timeZone: DISPLAY_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+function lagosParts(input: string | number | null | undefined): Record<string, string> | null {
+  if (input === null || input === undefined || input === '') return null;
+  const d = new Date(input);
+  if (Number.isNaN(d.getTime())) return null;
+  return Object.fromEntries(partsFmt.formatToParts(d).map((p) => [p.type, p.value]));
+}
+
+/** "2 Oct 2026, 14:05 WAT" */
+export function formatDateTime(iso: string | null | undefined): string {
+  const p = lagosParts(iso);
+  if (!p) return '—';
+  return `${Number(p.day)} ${MONTHS[Number(p.month) - 1]} ${p.year}, ${p.hour}:${p.minute} WAT`;
+}
+
+/** "14:05:09 WAT" */
+export function formatTime(input: string | number | null | undefined): string {
+  const p = lagosParts(input);
+  if (!p) return '—';
+  return `${p.hour}:${p.minute}:${p.second} WAT`;
+}
+
+/**
+ * Format a calendar date ("YYYY-MM-DD") without any timezone conversion —
+ * report dates are business days, not instants.
+ */
+export function formatCalendarDate(ymd: string | null | undefined, withYear = true): string {
+  if (!ymd) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd);
+  if (!m) return ymd;
+  const [, y, mo, d] = m;
+  const label = `${Number(d)} ${MONTHS[Number(mo) - 1] ?? mo}`;
+  return withYear ? `${label} ${y}` : label;
+}
+
+/** Compact age, e.g. "45m", "6h", "3d". `now` is passed in to keep renders pure. */
+export function formatAge(iso: string | null | undefined, now: number | null): string {
+  if (!iso || now === null) return '—';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '—';
+  const minutes = Math.max(0, Math.floor((now - then) / 60_000));
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+// ─── Labels ──────────────────────────────────────────────────────────────────
+
+export function humanize(value: string | null | undefined): string {
+  if (!value) return '—';
+  const s = value.replace(/_/g, ' ').replace(/\bfx\b/gi, 'FX');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const PSP_NAMES: Record<string, string> = {
+  paystack: 'Paystack',
+  flutterwave: 'Flutterwave',
 };
 
-export function formatCurrency(
-  amount: number,
-  currencyOrCompact: string | boolean = 'NGN'
-): string {
-  // Support compact mode: formatCurrency(amount, true) → always abbreviates
-  const currency = typeof currencyOrCompact === 'boolean' ? 'NGN' : currencyOrCompact;
-  const compact  = typeof currencyOrCompact === 'boolean' ? currencyOrCompact : false;
-
-  const symbol = currencySymbols[currency] ?? currency;
-  const absAmount = Math.abs(amount);
-  const sign = amount < 0 ? '-' : '';
-
-  if (absAmount >= 1_000_000_000) {
-    return `${sign}${symbol}${(absAmount / 1_000_000_000).toFixed(compact ? 1 : 2)}B`;
-  }
-  if (absAmount >= 1_000_000) {
-    return `${sign}${symbol}${(absAmount / 1_000_000).toFixed(compact ? 1 : 2)}M`;
-  }
-  if (compact && absAmount >= 1_000) {
-    return `${sign}${symbol}${(absAmount / 1_000).toFixed(1)}K`;
-  }
-
-  return `${sign}${symbol}${absAmount.toLocaleString('en-NG', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  })}`;
-}
-
-export function formatCurrencyFull(
-  amount: number,
-  currency: string = 'NGN'
-): string {
-  const symbol = currencySymbols[currency] ?? currency;
-  const sign = amount < 0 ? '-' : '';
-  return `${sign}${symbol}${Math.abs(amount).toLocaleString('en-NG', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  })}`;
-}
-
-// ─── Percent Formatting ──────────────────────────────────────────────────────
-
-export function formatPercent(value: number): string {
-  return `${value.toFixed(1)}%`;
-}
-
-// ─── Relative Time ────────────────────────────────────────────────────────────
-
-export function getRelativeTime(dateStr: string): string {
-  const now = Date.now();
-  const then = new Date(dateStr).getTime();
-  const diffMs = now - then;
-  const diffSeconds = Math.floor(diffMs / 1000);
-  const diffMinutes = Math.floor(diffSeconds / 60);
-  const diffHours = Math.floor(diffMinutes / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
-  if (diffSeconds < 60) return 'just now';
-  if (diffMinutes < 60)
-    return `${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''} ago`;
-  if (diffHours < 24)
-    return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
-  if (diffDays < 30)
-    return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
-  return new Date(dateStr).toLocaleDateString('en-NG');
-}
-
-// Alias for backward compat — accepts Date | string
-export function timeAgo(date: Date | string): string {
-  const dateStr = date instanceof Date ? date.toISOString() : date;
-  return getRelativeTime(dateStr);
-}
-
-// ─── Severity Color Classes ───────────────────────────────────────────────────
-
-export function getSeverityColor(severity: string): {
-  bg: string;
-  text: string;
-  dot: string;
-  badge: string;
-} {
-  switch (severity) {
-    case 'critical':
-      return {
-        bg: 'bg-danger-500/15',
-        text: 'text-danger-400',
-        dot: 'bg-danger-400',
-        badge: 'badge-critical',
-      };
-    case 'high':
-      return {
-        bg: 'bg-warning-500/15',
-        text: 'text-warning-400',
-        dot: 'bg-warning-400',
-        badge: 'badge-high',
-      };
-    case 'medium':
-      return {
-        bg: 'bg-primary-500/15',
-        text: 'text-primary-400',
-        dot: 'bg-primary-400',
-        badge: 'badge-medium',
-      };
-    case 'low':
-      return {
-        bg: 'bg-success-500/15',
-        text: 'text-success-400',
-        dot: 'bg-success-400',
-        badge: 'badge-low',
-      };
-    default:
-      return {
-        bg: 'bg-surface-300/15',
-        text: 'text-surface-600',
-        dot: 'bg-surface-500',
-        badge: 'badge-low',
-      };
-  }
-}
-
-// ─── Status Color Classes ─────────────────────────────────────────────────────
-
-export function getStatusColor(status: string): {
-  bg: string;
-  text: string;
-  dot: string;
-} {
-  switch (status) {
-    case 'connected':
-      return {
-        bg: 'bg-success-500/15',
-        text: 'text-success-400',
-        dot: 'bg-success-400',
-      };
-    case 'degraded':
-      return {
-        bg: 'bg-warning-500/15',
-        text: 'text-warning-400',
-        dot: 'bg-warning-400',
-      };
-    case 'disconnected':
-      return {
-        bg: 'bg-danger-500/15',
-        text: 'text-danger-400',
-        dot: 'bg-danger-400',
-      };
-    default:
-      return {
-        bg: 'bg-surface-300/15',
-        text: 'text-surface-500',
-        dot: 'bg-surface-500',
-      };
-  }
-}
-
-// ─── Number Formatting ────────────────────────────────────────────────────────
-
-export function formatNumber(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return value.toLocaleString('en-NG');
+export function pspDisplayName(name: string | null | undefined): string {
+  if (!name) return '—';
+  return PSP_NAMES[name.toLowerCase()] ?? humanize(name);
 }

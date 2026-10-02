@@ -1,372 +1,219 @@
-// ─── MMR Demo Data Layer ──────────────────────────────────────────────────────
-// Realistic mock data for the reconciliation dashboard.
-// All monetary amounts in Nigerian Naira (NGN) unless otherwise noted.
+// ─── Demo fixtures ───────────────────────────────────────────────────────────
+// Used ONLY when the dashboard is built with NEXT_PUBLIC_DEMO_MODE=true, in
+// which case every page carries a persistent "Demo data" banner. These are
+// hand-written, deterministic fixtures in the exact API contract shape. They
+// are not samples of real traffic and must never be presented as such.
 
-// ─── Type Definitions ─────────────────────────────────────────────────────────
+import type {
+  DiscrepancyEventsResponse,
+  DailyReportsResponse,
+  Discrepancy,
+  DiscrepancyFilters,
+  DiscrepancyListResponse,
+  ExposureResponse,
+  PspHealthResponse,
+  ReadinessBody,
+  ReconciliationSummary,
+  TrendResponse,
+} from './api';
+import { koboToDecimalString, sumKobo, toKobo } from './money';
 
-export interface DailySummary {
-  date: string;
-  matchRate: number;
-  volume: number;
-  exposure: number;
-  discrepancyCount: number;
-  transactionsProcessed: number;
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+function isoAgo(ms: number): string {
+  return new Date(Date.now() - ms).toISOString();
 }
 
-export interface Discrepancy {
-  id: string;
-  type:
-    | 'missing_settlement'
-    | 'amount_mismatch'
-    | 'fx_variance'
-    | 'duplicate_credit'
-    | 'late_settlement';
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  psp: 'paystack' | 'flutterwave' | 'mpesa';
-  amount: number;
-  currency: string;
-  reference: string;
-  beneficiaryName: string;
-  status: 'open' | 'investigating' | 'resolved';
-  createdAt: string;
-  ageHours: number;
+function ymdAgo(days: number): string {
+  return new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
 }
 
-export interface PSPHealth {
-  name: string;
-  displayName: string;
-  status: 'connected' | 'degraded' | 'disconnected';
-  volumeToday: number;
-  matchRate: number;
-  avgSettlementHours: number;
-  webhookGapRate: number;
-  lastWebhookAt: string;
-  transactionsToday: number;
+/** Small deterministic wobble so charts are not flat lines. */
+function wobble(i: number, amplitude: number): number {
+  return Math.round(Math.sin(i * 1.7) * amplitude + Math.cos(i * 0.6) * amplitude * 0.5);
 }
 
-export interface FXRate {
-  date: string;
-  ngnUsd: number;
-  ngnGbp: number;
-  ngnKes: number;
-}
-
-export interface KPIMetric {
-  value: number;
-  delta: number;
-  trend: number[];
-}
-
-export interface KPISummary {
-  matchRate: KPIMetric;
-  openExposure: KPIMetric;
-  pendingIssues: KPIMetric;
-  txnsToday: KPIMetric;
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function daysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
-
-function hoursAgo(n: number): string {
-  const d = new Date();
-  d.setHours(d.getHours() - n);
-  return d.toISOString();
-}
-
-function seededRandom(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s = (s * 16807) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-}
-
-const rand = seededRandom(42);
-
-// ─── Nigerian Names & References ──────────────────────────────────────────────
-
-const nigerianNames = [
-  'Adebayo Ogundimu',
-  'Chidinma Okafor',
-  'Emeka Nwosu',
-  'Fatima Abdullahi',
-  'Ifeanyi Eze',
-  'Kemi Adeyemi',
-  'Oluwaseun Bakare',
-  'Ngozi Ibe',
-  'Tunde Ajayi',
-  'Amina Yusuf',
-  'Chinedu Okoro',
-  'Bolaji Fashola',
-  'Yetunde Adeola',
-  'Uche Madueke',
-  'Ibrahim Musa',
-  'Funke Oladipo',
-  'Segun Akinwale',
-  'Halima Bello',
-  'Obiora Nnamdi',
-  'Aisha Suleiman',
-  'Damilola Ogun',
-  'Chukwuma Ike',
-  'Folashade Coker',
-  'Kingsley Igwe',
-  'Zainab Mohammed',
+const RAW: (Omit<Discrepancy, 'detected_at' | 'resolved_at'> & { ageHours: number; resolvedAgoHours?: number })[] = [
+  { id: 1042, transaction_id: 88123, discrepancy_type: 'duplicate_credit', severity: 'critical', estimated_exposure_ngn: '250000.00', amount_ngn: '250000.00', evidence: { duplicate_of: 88121, window_seconds: 41 }, status: 'open', resolved_by: null, psp_name: 'paystack', psp_transaction_ref: 'DEMO-PSK-000412', ageHours: 5 },
+  { id: 1039, transaction_id: 88007, discrepancy_type: 'missing_settlement', severity: 'high', estimated_exposure_ngn: '182500.00', amount_ngn: '182500.00', evidence: { expected_settlement_by: 'T+1', webhook_seen: true }, status: 'open', resolved_by: null, psp_name: 'flutterwave', psp_transaction_ref: 'DEMO-FLW-000233', ageHours: 31 },
+  { id: 1037, transaction_id: 87950, discrepancy_type: 'amount_mismatch', severity: 'high', estimated_exposure_ngn: '4750.00', amount_ngn: '95000.00', evidence: { amount_a_ngn: '95000.00', amount_b_ngn: '90250.00' }, status: 'under_review', resolved_by: null, psp_name: 'paystack', psp_transaction_ref: 'DEMO-PSK-000398', ageHours: 52 },
+  { id: 1031, transaction_id: 87702, discrepancy_type: 'late_settlement', severity: 'medium', estimated_exposure_ngn: '61200.00', amount_ngn: '61200.00', evidence: { hours_late: 19 }, status: 'open', resolved_by: null, psp_name: 'flutterwave', psp_transaction_ref: 'DEMO-FLW-000219', ageHours: 20 },
+  { id: 1028, transaction_id: 87655, discrepancy_type: 'amount_mismatch', severity: 'medium', estimated_exposure_ngn: '310.50', amount_ngn: '31050.00', evidence: { amount_a_ngn: '31050.00', amount_b_ngn: '30739.50' }, status: 'escalated', resolved_by: null, psp_name: 'paystack', psp_transaction_ref: 'DEMO-PSK-000377', ageHours: 70 },
+  { id: 1024, transaction_id: 87511, discrepancy_type: 'fx_variance', severity: 'low', estimated_exposure_ngn: '125.75', amount_ngn: '48000.00', evidence: { variance_pct: '0.26' }, status: 'open', resolved_by: null, psp_name: 'flutterwave', psp_transaction_ref: 'DEMO-FLW-000201', ageHours: 9 },
+  { id: 1019, transaction_id: 87340, discrepancy_type: 'missing_settlement', severity: null, estimated_exposure_ngn: '15000.00', amount_ngn: '15000.00', evidence: {}, status: 'open', resolved_by: null, psp_name: 'paystack', psp_transaction_ref: 'DEMO-PSK-000351', ageHours: 3 },
+  { id: 1011, transaction_id: 86998, discrepancy_type: 'late_settlement', severity: 'low', estimated_exposure_ngn: '22000.00', amount_ngn: '22000.00', evidence: { hours_late: 2 }, status: 'resolved', resolved_by: 'demo-analyst', psp_name: 'paystack', psp_transaction_ref: 'DEMO-PSK-000322', ageHours: 96, resolvedAgoHours: 80 },
+  { id: 1007, transaction_id: 86870, discrepancy_type: 'fx_variance', severity: 'low', estimated_exposure_ngn: '40.00', amount_ngn: '12000.00', evidence: { variance_pct: '0.33' }, status: 'false_positive', resolved_by: 'demo-analyst', psp_name: 'flutterwave', psp_transaction_ref: 'DEMO-FLW-000177', ageHours: 120, resolvedAgoHours: 100 },
 ];
 
-const pspOptions: ('paystack' | 'flutterwave' | 'mpesa')[] = [
-  'paystack',
-  'flutterwave',
-  'mpesa',
-];
+function allDiscrepancies(): Discrepancy[] {
+  return RAW.map(({ ageHours, resolvedAgoHours, ...d }) => ({
+    ...d,
+    detected_at: isoAgo(ageHours * HOUR),
+    resolved_at: resolvedAgoHours === undefined ? null : isoAgo(resolvedAgoHours * HOUR),
+    resolution_note:
+      d.status === 'resolved'
+        ? 'Demo fixture: settlement located in the next PSP payout batch.'
+        : d.status === 'false_positive'
+          ? 'Demo fixture: variance within the configured FX tolerance.'
+          : null,
+  }));
+}
 
-const discrepancyTypes: Discrepancy['type'][] = [
-  'missing_settlement',
-  'amount_mismatch',
-  'fx_variance',
-  'duplicate_credit',
-  'late_settlement',
-];
-
-const severities: Discrepancy['severity'][] = [
-  'critical',
-  'high',
-  'medium',
-  'low',
-];
-
-const statuses: Discrepancy['status'][] = ['open', 'investigating', 'resolved'];
-
-// ─── Daily Summaries (30 days) ────────────────────────────────────────────────
-
-function generateDailySummaries(): DailySummary[] {
-  const summaries: DailySummary[] = [];
-
-  for (let i = 29; i >= 0; i--) {
-    const baseVolume = 450_000_000 + rand() * 200_000_000;
-    const matchRate = 94 + rand() * 5.5;
-    const discrepancyCount = Math.floor(3 + rand() * 12);
-    const exposure = baseVolume * (1 - matchRate / 100) * (0.3 + rand() * 0.4);
-    const transactionsProcessed = Math.floor(8000 + rand() * 7000);
-
-    summaries.push({
-      date: daysAgo(i),
-      matchRate: Math.round(matchRate * 100) / 100,
-      volume: Math.round(baseVolume),
-      exposure: Math.round(exposure),
-      discrepancyCount,
-      transactionsProcessed,
+/** Audit trail derived from the fixture's own fields — nothing beyond what the row states. */
+export function discrepancyEvents(id: number): DiscrepancyEventsResponse {
+  const d = allDiscrepancies().find((row) => row.id === id);
+  if (!d) return { discrepancy_id: id, events: [] };
+  const events: DiscrepancyEventsResponse['events'] = [
+    { action: 'raised', from_status: null, to_status: 'open', actor: 'engine', note: null, occurred_at: d.detected_at },
+  ];
+  if (d.status === 'escalated') {
+    events.push({
+      action: 'escalated',
+      from_status: 'open',
+      to_status: 'escalated',
+      actor: 'demo-analyst',
+      note: null,
+      occurred_at: new Date(Date.parse(d.detected_at) + 2 * HOUR).toISOString(),
     });
   }
-
-  return summaries;
-}
-
-// ─── Discrepancies (25 items) ─────────────────────────────────────────────────
-
-function generateDiscrepancies(): Discrepancy[] {
-  const items: Discrepancy[] = [];
-
-  const amounts = [
-    2_450_000, 185_000, 12_750_000, 890_500, 45_000, 3_200_000, 567_800,
-    1_100_000, 78_900, 6_543_210, 234_567, 9_870_000, 456_123, 2_345_678,
-    1_234_500, 678_900, 345_678, 8_901_234, 567_890, 123_456, 4_567_890,
-    789_012, 3_456_789, 234_500, 5_678_901,
-  ];
-
-  const ageDistribution = [
-    2, 4, 6, 8, 12, 1, 18, 24, 36, 48, 3, 72, 5, 96, 14, 120, 7, 144, 168,
-    10, 192, 216, 240, 15, 0.5,
-  ];
-
-  for (let i = 0; i < 25; i++) {
-    const ageH = ageDistribution[i];
-    // Weight severity: more recent → more likely critical
-    const sevIdx =
-      ageH < 6
-        ? Math.floor(rand() * 2)
-        : ageH < 48
-          ? Math.floor(1 + rand() * 2)
-          : Math.floor(2 + rand() * 2);
-    const statIdx =
-      ageH > 120
-        ? 2
-        : ageH > 48
-          ? Math.floor(rand() * 2) + 1
-          : Math.floor(rand() * 2);
-
-    items.push({
-      id: `DIS-${String(1000 + i).padStart(4, '0')}`,
-      type: discrepancyTypes[Math.floor(rand() * discrepancyTypes.length)],
-      severity: severities[Math.min(sevIdx, 3)],
-      psp: pspOptions[Math.floor(rand() * pspOptions.length)],
-      amount: amounts[i],
-      currency: 'NGN',
-      reference: `TXN-${Date.now().toString(36).toUpperCase()}-${String(i).padStart(3, '0')}`,
-      beneficiaryName: nigerianNames[i],
-      status: statuses[Math.min(statIdx, 2)],
-      createdAt: hoursAgo(ageH),
-      ageHours: ageH,
+  if (d.resolved_at) {
+    events.push({
+      action: d.status === 'false_positive' ? 'marked_false_positive' : 'resolved',
+      from_status: 'open',
+      to_status: d.status,
+      actor: d.resolved_by,
+      note: d.resolution_note ?? null,
+      occurred_at: d.resolved_at,
     });
   }
-
-  return items;
+  return { discrepancy_id: id, events };
 }
 
-// ─── PSP Health Records ───────────────────────────────────────────────────────
+const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
-function generatePSPHealth(): PSPHealth[] {
-  return [
-    {
-      name: 'paystack',
-      displayName: 'Paystack',
-      status: 'connected',
-      volumeToday: 245_670_000,
-      matchRate: 98.4,
-      avgSettlementHours: 2.3,
-      webhookGapRate: 0.12,
-      lastWebhookAt: hoursAgo(0.05),
-      transactionsToday: 5_420,
-    },
-    {
-      name: 'flutterwave',
-      displayName: 'Flutterwave',
-      status: 'degraded',
-      volumeToday: 189_340_000,
-      matchRate: 94.7,
-      avgSettlementHours: 4.1,
-      webhookGapRate: 2.34,
-      lastWebhookAt: hoursAgo(0.8),
-      transactionsToday: 3_890,
-    },
-    {
-      name: 'mpesa',
-      displayName: 'M-Pesa',
-      status: 'connected',
-      volumeToday: 67_890_000,
-      matchRate: 97.1,
-      avgSettlementHours: 6.8,
-      webhookGapRate: 0.45,
-      lastWebhookAt: hoursAgo(0.2),
-      transactionsToday: 1_230,
-    },
-  ];
+export function discrepancies(filters: DiscrepancyFilters): DiscrepancyListResponse {
+  const rows = allDiscrepancies()
+    .filter((d) => filters.status === 'all' || d.status === filters.status)
+    .filter((d) => !filters.severity || d.severity === filters.severity)
+    .filter((d) => !filters.psp_name || d.psp_name === filters.psp_name)
+    .sort(
+      (a, b) =>
+        (SEVERITY_ORDER[a.severity ?? ''] ?? 4) - (SEVERITY_ORDER[b.severity ?? ''] ?? 4) ||
+        b.detected_at.localeCompare(a.detected_at),
+    );
+  const page = rows.slice(filters.offset, filters.offset + filters.limit);
+  return { discrepancies: page, limit: filters.limit, offset: filters.offset, count: page.length };
 }
 
-// ─── FX Rate History (30 days) ────────────────────────────────────────────────
+function openRows(): Discrepancy[] {
+  return allDiscrepancies().filter((d) => d.status !== 'resolved' && d.status !== 'false_positive');
+}
 
-function generateFXRates(): FXRate[] {
-  const rates: FXRate[] = [];
-  let ngnUsd = 1580;
-  let ngnGbp = 1990;
-  let ngnKes = 11.5;
-
-  for (let i = 29; i >= 0; i--) {
-    // Simulate realistic small daily FX movements
-    ngnUsd += (rand() - 0.48) * 15;
-    ngnGbp += (rand() - 0.48) * 20;
-    ngnKes += (rand() - 0.48) * 0.3;
-
-    rates.push({
-      date: daysAgo(i),
-      ngnUsd: Math.round(ngnUsd * 100) / 100,
-      ngnGbp: Math.round(ngnGbp * 100) / 100,
-      ngnKes: Math.round(ngnKes * 100) / 100,
-    });
+export function exposure(): ExposureResponse {
+  const groups = new Map<string, Discrepancy[]>();
+  for (const d of openRows()) {
+    const key = `${d.psp_name}|${d.discrepancy_type}`;
+    groups.set(key, [...(groups.get(key) ?? []), d]);
   }
-
-  return rates;
-}
-
-// ─── Cached Instances ─────────────────────────────────────────────────────────
-
-let _dailySummaries: DailySummary[] | null = null;
-let _discrepancies: Discrepancy[] | null = null;
-let _pspHealth: PSPHealth[] | null = null;
-let _fxRates: FXRate[] | null = null;
-
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-export function getDailySummaries(): DailySummary[] {
-  if (!_dailySummaries) _dailySummaries = generateDailySummaries();
-  return _dailySummaries;
-}
-
-export function getDiscrepancies(): Discrepancy[] {
-  if (!_discrepancies) _discrepancies = generateDiscrepancies();
-  return _discrepancies;
-}
-
-export function getPSPHealth(): PSPHealth[] {
-  if (!_pspHealth) _pspHealth = generatePSPHealth();
-  return _pspHealth;
-}
-
-export function getFXRates(): FXRate[] {
-  if (!_fxRates) _fxRates = generateFXRates();
-  return _fxRates;
-}
-
-export function getKPISummary(): KPISummary {
-  const summaries = getDailySummaries();
-  const discrepancies = getDiscrepancies();
-  const pspHealth = getPSPHealth();
-
-  const today = summaries[summaries.length - 1];
-  const yesterday = summaries[summaries.length - 2];
-
-  const openDiscrepancies = discrepancies.filter(
-    (d) => d.status !== 'resolved'
-  );
-  const yesterdayOpen = Math.floor(openDiscrepancies.length * 1.15);
-
-  const totalTransactionsToday = pspHealth.reduce(
-    (sum, p) => sum + p.transactionsToday,
-    0
-  );
-  const yesterdayTransactions = yesterday.transactionsProcessed;
-
-  // Sparkline trends from last 7 days
-  const recentSummaries = summaries.slice(-7);
-  const matchRateTrend = recentSummaries.map((s) => s.matchRate);
-  const exposureTrend = recentSummaries.map((s) => s.exposure);
-  const discrepancyTrend = recentSummaries.map((s) => s.discrepancyCount);
-  const txnTrend = recentSummaries.map((s) => s.transactionsProcessed);
-
+  const by = [...groups.entries()].map(([key, rows]) => {
+    const [psp_name, discrepancy_type] = key.split('|');
+    return {
+      psp_name,
+      discrepancy_type,
+      open_count: rows.length,
+      total_exposure_ngn: koboToDecimalString(sumKobo(rows.map((r) => r.estimated_exposure_ngn))),
+    };
+  });
+  by.sort((a, b) => Number((toKobo(b.total_exposure_ngn) ?? BigInt(0)) - (toKobo(a.total_exposure_ngn) ?? BigInt(0))));
   return {
-    matchRate: {
-      value: today.matchRate,
-      delta:
-        Math.round((today.matchRate - yesterday.matchRate) * 100) / 100,
-      trend: matchRateTrend,
-    },
-    openExposure: {
-      value: today.exposure,
-      delta:
-        Math.round(
-          ((today.exposure - yesterday.exposure) / yesterday.exposure) * 10000
-        ) / 100,
-      trend: exposureTrend,
-    },
-    pendingIssues: {
-      value: openDiscrepancies.length,
-      delta: openDiscrepancies.length - yesterdayOpen,
-      trend: discrepancyTrend,
-    },
-    txnsToday: {
-      value: totalTransactionsToday,
-      delta:
-        Math.round(
-          ((totalTransactionsToday - yesterdayTransactions) /
-            yesterdayTransactions) *
-            10000
-        ) / 100,
-      trend: txnTrend,
-    },
+    total_open_exposure_ngn: koboToDecimalString(sumKobo(openRows().map((r) => r.estimated_exposure_ngn))),
+    by_psp_and_type: by,
+    generated_at: isoAgo(0),
   };
 }
 
+export function trend(days: number): TrendResponse {
+  const out = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const total = 1180 + wobble(i, 90);
+    const unmatched = 14 + Math.abs(wobble(i + 3, 9));
+    const matched = total - unmatched;
+    out.push({
+      date: ymdAgo(i),
+      total,
+      matched,
+      match_rate_pct: Math.round((matched / total) * 10_000) / 100,
+    });
+  }
+  return { days: out };
+}
+
+export function summary(): ReconciliationSummary {
+  const today = trend(1).days[0];
+  const byType = new Map<string, Discrepancy[]>();
+  for (const d of openRows()) byType.set(d.discrepancy_type, [...(byType.get(d.discrepancy_type) ?? []), d]);
+  return {
+    report_date: today.date,
+    total_transactions: today.total,
+    matched: today.matched,
+    unmatched: today.total - today.matched,
+    match_rate_pct: today.match_rate_pct,
+    discrepancies: [...byType.entries()].map(([discrepancy_type, rows]) => ({
+      discrepancy_type,
+      count: rows.length,
+      total_exposure: koboToDecimalString(sumKobo(rows.map((r) => r.estimated_exposure_ngn))),
+    })),
+    generated_at: isoAgo(4 * 60_000),
+  };
+}
+
+export function pspHealth(): PspHealthResponse {
+  const open = openRows();
+  return {
+    psps: [
+      { psp: 'paystack', events: 742, lastMs: 2 * 60_000, rate: 98.4 },
+      { psp: 'flutterwave', events: 455, lastMs: 11 * 60_000, rate: 97.1 },
+    ].map(({ psp, events, lastMs, rate }) => {
+      const rows = open.filter((d) => d.psp_name === psp);
+      return {
+        psp_name: psp,
+        events_24h: events,
+        last_event_at: isoAgo(lastMs),
+        match_rate_pct_7d: rate,
+        open_discrepancies: rows.length,
+        open_exposure_ngn: koboToDecimalString(sumKobo(rows.map((r) => r.estimated_exposure_ngn))),
+      };
+    }),
+  };
+}
+
+export function dailyReports({ limit, offset }: { limit: number; offset: number }): DailyReportsResponse {
+  const days = trend(30).days.slice().reverse().slice(1); // completed days only
+  const reports = days.map((d, i) => ({
+    report_date: d.date,
+    total_transactions: d.total,
+    total_volume_ngn: koboToDecimalString(BigInt(d.total) * BigInt(5_412_350)),
+    match_rate_pct: d.match_rate_pct,
+    cross_border_count: 0,
+    suspicious_flags: i % 9 === 4 ? 1 : 0,
+    open_discrepancies: d.total - d.matched,
+    total_exposure_ngn: koboToDecimalString(BigInt(d.total - d.matched) * BigInt(2_150_000)),
+    status: 'generated',
+    generated_at: new Date(Date.parse(`${d.date}T01:00:00Z`) + DAY).toISOString(),
+  }));
+  const page = reports.slice(offset, offset + limit);
+  return { reports: page, count: page.length };
+}
+
+export function readiness(): ReadinessBody {
+  return {
+    status: 'healthy',
+    version: 'demo',
+    checks: {
+      postgres: { status: 'demo', error: 'Demo mode: no database is queried' },
+      redpanda: { status: 'demo', error: 'Demo mode: no broker is queried' },
+      minio: { status: 'demo', error: 'Demo mode: no object store is queried' },
+    },
+  };
+}
