@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # CREDENTIAL & DEPLOYMENT ARCHITECTURE DOCUMENT
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0
 **Author:** Emmanuel Richard
@@ -16,12 +18,12 @@ The reconciliation engine was designed from the ground up as infrastructure, not
 
 However, different clients have different operational realities. A mid-sized fintech with a DevOps team will want to run this themselves. A small e-commerce business with a finance officer and no engineers wants to connect and have it work. A regulated microfinance bank needs their data to stay within their own infrastructure boundary for compliance reasons.
 
-This document defines three deployment models — each a complete, production-grade architecture — so the right model can be selected based on what the client actually needs, not what is easiest to sell.
+This document defines three deployment models — each a complete reference architecture — so the right model can be selected based on what the client actually needs, not what is easiest to sell.
 
 **The three models are:**
 
 - **Option A — Self-Hosted (Default):** Client runs everything. Credentials never leave their infrastructure.
-- **Option B — Managed Deployment:** We run the system. Client credentials are stored in our infrastructure with enterprise-grade encryption.
+- **Option B — Managed Deployment:** We run the system. Client credentials are stored in our infrastructure with strong encryption.
 - **Option C — Read-Only API Key Model:** Hybrid model. Client provides scoped read-only credentials only. Reduced blast radius. Suitable for managed and semi-managed deployments.
 
 These are not mutually exclusive long-term. A client can start on Option B and migrate to Option A as their engineering team matures. Option C is a credential scope decision that applies to both Option A and Option B.
@@ -155,33 +157,7 @@ Flutterwave provides separate public and secret keys. The secret key is required
 
 ### 3.3 M-Pesa Daraja
 
-```
-REQUIRED:
-─────────────────────────────────────────────────────────────────
-consumer_key + consumer_secret  OAuth token generation
-GET /mpesa/transactionstatus    Query transaction status
-GET /mpesa/accountbalance       Balance check (optional)
-
-NEVER REQUESTED:
-─────────────────────────────────────────────────────────────────
-POST /mpesa/b2c/v1/paymentrequest  Send money to customer
-POST /mpesa/b2b/v1/paymentrequest  Business payment
-```
-
-M-Pesa Daraja actually supports scoped OAuth tokens — the most advanced credential model of the three. The token generation specifies which API endpoints are accessible.
-
-```python
-# M-Pesa credential model is more granular
-MPESA_REQUIRED_SCOPES = [
-    "TransactionStatus",    # Query transaction status
-]
-
-MPESA_NEVER_REQUEST = [
-    "BusinessPayBill",      # Send money
-    "BusinessBuyGoods",     # Pay for goods
-    "CustomerBuyGoodsOnline",
-]
-```
+_M-Pesa support was planned but never built._
 
 ---
 
@@ -317,10 +293,6 @@ MINIO_SECRET_KEY=                    # Generate: openssl rand -hex 32
 PAYSTACK_SECRET_KEY=YOUR_PAYSTACK_KEY         # From: dashboard.paystack.com → Settings → API Keys
 FLUTTERWAVE_SECRET_KEY=YOUR_FLUTTERWAVE_KEY    # From: app.flutterwave.com → Settings → API
 FLUTTERWAVE_SECRET_HASH=             # From: app.flutterwave.com → Settings → Webhooks
-
-# Optional PSPs (leave blank if not used)
-MPESA_CONSUMER_KEY=
-MPESA_CONSUMER_SECRET=
 
 # ── Webhook Configuration ──────────────────────────────────────────
 # Configure these URLs in your PSP dashboards
@@ -978,7 +950,7 @@ router = APIRouter(prefix="/integrations", tags=["Integrations (Managed)"])
 
 
 class ConnectPSPRequest(BaseModel):
-    psp_name: str = Field(description="PSP to connect: paystack | flutterwave | mpesa")
+    psp_name: str = Field(description="PSP to connect: paystack | flutterwave")
     api_key: str = Field(
         description=(
             "Your PSP API key. This is encrypted immediately on receipt "
@@ -991,7 +963,7 @@ class ConnectPSPRequest(BaseModel):
     @field_validator("psp_name")
     @classmethod
     def validate_psp_name(cls, v: str) -> str:
-        valid = {"paystack", "flutterwave", "mpesa"}
+        valid = {"paystack", "flutterwave"}
         if v.lower() not in valid:
             raise ValueError(f"psp_name must be one of: {', '.join(valid)}")
         return v.lower()
@@ -1325,7 +1297,7 @@ The gap between what is available and what is needed is where security risk live
 
 ### 6.3 The Two Mechanisms for Scope Reduction
 
-Since Nigerian PSPs do not natively support scoped API keys (with the exception of M-Pesa), scope restriction must be achieved through a combination of technical and procedural controls:
+Since Nigerian PSPs do not natively support scoped API keys, scope restriction must be achieved through a combination of technical and procedural controls:
 
 **Mechanism 1 — Application-Layer Enforcement (all options)**
 
@@ -1483,58 +1455,7 @@ def generate_ip_whitelist_instructions(
 
 ### 6.4 M-Pesa — The Exception (Real OAuth Scopes)
 
-M-Pesa Daraja is the only Nigerian-adjacent PSP that provides genuine OAuth-based scope restriction. This should be used to its full extent.
-
-```python
-# src/connectors/mpesa_oauth.py
-
-class MPesaDarajaOAuthClient:
-    """
-    M-Pesa uses OAuth 2.0 client credentials flow.
-    We request only the scopes required for reconciliation.
-    The access token expires every 3600 seconds and is refreshed automatically.
-
-    Unlike Paystack/Flutterwave where scope is not restricable,
-    M-Pesa tokens are genuinely scoped — a token issued for
-    TransactionStatus cannot initiate B2C payments.
-    """
-
-    REQUIRED_SCOPES = "TransactionStatus"  # Read-only query scope
-    TOKEN_URL = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
-
-    def __init__(self, consumer_key: str, consumer_secret: str) -> None:
-        self._consumer_key = consumer_key
-        self._consumer_secret = consumer_secret
-        self._access_token: str | None = None
-        self._token_expires_at: float = 0
-
-    async def get_access_token(self) -> str:
-        """
-        Returns a valid access token, refreshing if expired.
-        Token has genuine scope restriction — only TransactionStatus.
-        A compromised token cannot initiate payments.
-        """
-        import time
-        if self._access_token and time.time() < self._token_expires_at - 60:
-            return self._access_token
-
-        import base64, httpx
-        credentials = base64.b64encode(
-            f"{self._consumer_key}:{self._consumer_secret}".encode()
-        ).decode()
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                self.TOKEN_URL,
-                headers={"Authorization": f"Basic {credentials}"},
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        self._access_token = data["access_token"]
-        self._token_expires_at = time.time() + int(data["expires_in"])
-        return self._access_token
-```
+_M-Pesa support was planned but never built._
 
 ### 6.5 The Client Communication Layer
 
@@ -1737,8 +1658,6 @@ class SelfHostedCredentialResolver(BaseCredentialResolver):
         credential_map = {
             "paystack": settings.paystack_secret_key,
             "flutterwave": settings.flutterwave_secret_key,
-            "mpesa_consumer_key": settings.mpesa_consumer_key,
-            "mpesa_consumer_secret": settings.mpesa_consumer_secret,
         }
         return credential_map.get(psp_name) or None
 
@@ -2038,7 +1957,7 @@ echo "  3. Contact support to disable your managed account"
 │                                              │           │                   │
 │ COMPLIANCE                                   │           │                   │
 │ CBN data residency (if required)             │    YES    │    NEGOTIABLE     │
-│ NDPR data processing register               │  Client's │    Ours           │
+│ NDPA 2023 data processing register          │  Client's │    Ours           │
 │ Audit trail access                          │  Full     │    Via API        │
 │                                              │           │                   │
 │ COMMERCIAL                                   │           │                   │
@@ -2053,7 +1972,6 @@ Credential Scope (applies to both):
 Option C (Read-Only) is not a deployment model — it is a credential discipline.
 In self-hosted: enforce via application architecture + IP whitelisting guidance.
 In managed: enforce via application architecture + IP whitelisting + audit logging.
-M-Pesa: enforce via genuine OAuth scopes (the only PSP that supports this today).
 ```
 
 ---

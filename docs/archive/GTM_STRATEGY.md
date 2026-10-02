@@ -1,3 +1,5 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 This is actually two questions that need separate, honest answers. Let me tackle both completely.
 
 ---
@@ -13,7 +15,6 @@ Data Source          What You Can Access Now        What Requires More
 ─────────────────── ────────────────────────────── ──────────────────────────────
 Paystack            Full sandbox API + webhooks     Live data needs business acct
 Flutterwave         Full sandbox API + webhooks     Same
-M-Pesa Daraja       Full sandbox environment        Safaricom business registration
 Moniepoint          No public developer sandbox     Partnership or client access
 NIBSS               No public API                   CBN licensed entity only
 CBN rate data       Partially public                Full access via licensed entity
@@ -414,7 +415,7 @@ You stop being the reconciliation engine. You become the person who reviews exce
 Current state (manual reconciliation):
 - 6 hours per week on reconciliation
 - Average detection lag for discrepancies: 4 days
-- Undetected discrepancy rate: estimated 2–4% of transaction volume
+- Undetected discrepancy rate: unknown without measurement (no sourced industry figure)
 - Monthly exposure from undetected gaps: unknown (that's the problem)
 
 With this system:
@@ -444,7 +445,7 @@ The API is versioned, documented, and stable. You can build your payout triggeri
 
 These are for Tunde. He will ask about them:
 
-- **Exactly-once processing:** The idempotency key registry and `ON CONFLICT DO NOTHING` guarantee that a Paystack webhook that fires three times produces one canonical transaction record, not three.
+- **Effectively-once processing:** On top of at-least-once delivery from Redpanda, the idempotency key registry, UNIQUE constraints and `ON CONFLICT DO NOTHING` ensure that a Paystack webhook that fires three times produces one canonical transaction record, not three.
 - **Webhook fallback:** If the webhook never arrives — which happens — the polling fallback catches it within 15 minutes. Your data is complete even when PSP infrastructure is unreliable.
 - **Audit trail:** Every status change is recorded with a timestamp, the triggering mechanism, and the previous and new state. When your auditor asks why a transaction moved from pending to settled at 3 AM on a Sunday, there is a record.
 - **FX timing:** The system applies the exchange rate that was in effect at the time of settlement, not the rate today. This is the difference between a technically correct system and a financially correct system.
@@ -475,8 +476,8 @@ The system also flags suspicious transaction patterns — velocity anomalies, am
 
 Do not say "compliance." Say:
 
-- **CBN Risk-Based Cybersecurity Framework 2021:** The system's audit logging satisfies the transaction monitoring requirements for Payment Service Providers.
-- **NDPR 2019/2023:** All personal data is handled in accordance with Nigeria Data Protection Act requirements — masked in operational storage, retained for seven years per CBN requirements, then anonymised.
+- **CBN Risk-Based Cybersecurity Framework 2021:** The system's audit logging is designed to support the transaction monitoring requirements for Payment Service Providers.
+- **NDPA 2023:** All personal data is handled in line with Nigeria Data Protection Act 2023 (NDPA) principles — masked in operational storage, retained for seven years per CBN requirements, then anonymised.
 - **AML/CFT:** Suspicious transaction pattern detection is built into the Gold layer. Flagged transactions flow directly into your STR reporting workflow.
 
 ---
@@ -502,7 +503,7 @@ You stop relying on your finance officer's memory and her spreadsheet. You start
 ```
 What this replaces:
 - 2–3 hours of senior finance staff time per day: NGN 500,000+/month in salary cost
-- Undetected discrepancies (industry average 2–4% of volume):
+- Undetected discrepancies (no sourced industry average; measure per client):
   On NGN 80M/month = NGN 1.6M–3.2M potentially undetected monthly
 
 What this costs:
@@ -514,7 +515,7 @@ The question is whether you can afford not to know.
 
 ---
 
-## Audience 5: The Investor / Development Finance Institution
+## Audience 5: Development Finance Institutions and Funders
 
 They are funding a Pan-African fintech initiative, or evaluating this as a B2B infrastructure investment. They think in portfolio companies, market size, and unit economics.
 
@@ -527,7 +528,7 @@ Registered businesses processing digital payments: ~2M+
 Businesses processing through 2+ PSPs: estimated 15–20% = 300,000–400,000
 
 Average monthly payment volume (mid-market):  NGN 50M
-Average undetected reconciliation gap:        2–4%
+Average undetected reconciliation gap:        (unmeasured)
 Average monthly financial exposure:           NGN 1M–2M per business
 
 Willingness to pay (estimated):              1–2% of exposure mitigated
@@ -538,7 +539,7 @@ Mid-market SOM (10,000 customers):           NGN 100M–400M annually
 
 **The infrastructure play:** This is not an app. It is financial plumbing for the multi-PSP Nigerian payment ecosystem. The more PSPs proliferate (and they will — CBN licensing continues to expand), the more critical this infrastructure becomes. Every new PSP in the market increases the reconciliation complexity for every multi-channel merchant. The product gets more valuable as the market grows.
 
-**The AfCFTA angle:** As cross-border trade formalises under AfCFTA, the FX reconciliation component becomes even more valuable. A Nigerian exporter collecting in Kenyan shillings via M-Pesa and in Ghanaian cedis via another provider has the same reconciliation problem, now with currency conversion complexity on top.
+**The AfCFTA angle:** As cross-border trade formalises under AfCFTA, the FX reconciliation component becomes even more valuable. A Nigerian exporter collecting in other African currencies via several providers has the same reconciliation problem, now with currency conversion complexity on top.
 
 ---
 
@@ -555,10 +556,10 @@ If your business accepts payments through more than one provider
 you have a reconciliation problem.
 
 THE COST OF DOING IT MANUALLY:
-• Finance staff spend 30–40% of their time on reconciliation
+• Finance staff spend significant time on manual reconciliation
 • Discrepancies are discovered days after they happen
-• On average, 2–4% of transaction volume has reconciliation gaps
-• For a business processing NGN 100M/month: NGN 2M–4M at risk
+• Reconciliation gaps exist in most multi-PSP setups; their size must be measured per business
+• The value at risk is whatever the first reconciliation run finds, not an assumed percentage
 
 THE COST OF NOT KNOWING:
 • Cash flow surprises because expected money did not arrive
@@ -652,7 +653,7 @@ Minute 8–10:   "Any questions about what you just saw?"
 
 **Truth 2: You must understand the PSPs better than the client.** When a finance officer at a Paystack merchant says "we had a settlement batch delay last week," you need to know what that means technically, why it happens, and how this system handles it. Domain credibility is what separates a tool from a trusted system.
 
-**Truth 3: The security and compliance story must be concrete.** Nigerian businesses — especially fintech-adjacent ones — are appropriately paranoid about third-party access to their transaction data. "We take security seriously" is meaningless. "Your API credentials are stored encrypted, your transaction data is masked at rest, your raw account numbers never leave your system, and we can provide the NDPR data processing register on request" is a conversation-ender in the right direction.
+**Truth 3: The security and compliance story must be concrete.** Nigerian businesses — especially fintech-adjacent ones — are appropriately paranoid about third-party access to their transaction data. "We take security seriously" is meaningless. "Your API credentials are stored encrypted, your transaction data is masked at rest, your raw account numbers never leave your system, and we can provide the NDPA 2023 data processing register on request" is a conversation-ender in the right direction.
 
 ---
 

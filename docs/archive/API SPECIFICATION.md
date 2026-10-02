@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # API SPECIFICATION
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0.0
 **Format:** OpenAPI 3.1.0
@@ -226,7 +228,7 @@ Headers returned on every response:
 openapi: "3.1.0"
 
 info:
-  title: "Cross-Border Mobile Money Reconciliation Engine API"
+  title: "MMR — Money Movement Reconciliation Engine API"
   version: "1.0.0"
   description: |
     Event-driven financial reconciliation API for multi-PSP Nigerian 
@@ -366,7 +368,6 @@ components:
       enum:
         - paystack
         - flutterwave
-        - mpesa
         - moniepoint
       description: Payment Service Provider identifier.
       example: "paystack"

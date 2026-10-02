@@ -1,3 +1,5 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 ## First: The Honest Threat Assessment
 
 Before claiming differentiation, acknowledge what these competitors have that you currently do not.
@@ -93,7 +95,8 @@ Competitor approach:    You import a CSV or bank feed
                         You see results next time you log in
 
 This system:            Webhook fires when transaction occurs
-                        Pipeline processes in < 10 seconds
+                        Pipeline ingests with low latency (internal target,
+                        not a settlement SLA; PSP settlement is typically T+1)
                         Dashboard reflects reality within minutes
 ```
 
@@ -142,7 +145,7 @@ A CFO using Klak knows their books are reconciled — eventually, when the bank 
 
 **CLIREC wins on:**
 
-- Bank-grade enterprise trust
+- Established enterprise trust with banks
 - Existing deployments at major Nigerian banks
 - Deep GL and core banking integration
 - Institutional relationships
@@ -167,9 +170,11 @@ This system's output          →    Klak's input
 ─────────────────────────────────────────────────
 Confirmed settlement data          Bank statement data
 Discrepancy-free transaction log   Accounting reconciliation
-CBN-compliant daily returns        Financial reports
+CBN-style daily returns*           Financial reports
 Real-time PSP reconciliation       Historical bookkeeping
 ```
+
+\* CBN-style daily return (experimental, not a compliance product).
 
 The pitch to a business that already uses Klak or QuickBooks:
 
@@ -183,7 +188,7 @@ This is not competition. This is complementary infrastructure. And it is a much 
 
 **Client Type 1: The Multi-PSP Fintech**
 
-A B2B payments company that routes transactions through Paystack for card payments, Flutterwave for bank transfers, and M-Pesa for East Africa collections. They need to know, for every transaction, which PSP it went through, whether it settled correctly, and what the FX impact was. No tool in the Nigerian market gives them this. Their engineering team currently maintains a fragile internal script.
+A B2B payments company that routes transactions through Paystack for card payments and Flutterwave for bank transfers. They need to know, for every transaction, which PSP it went through, whether it settled correctly, and what the FX impact was. No tool in the Nigerian market gives them this. Their engineering team currently maintains a fragile internal script.
 
 **Client Type 2: The E-commerce Company with Settlement Disputes**
 
@@ -229,7 +234,7 @@ The competitive landscape document you shared is not bad news. It is a map of ad
 
 Klak is real competition in the general reconciliation space. That space is not where this system should compete.
 
-The specific problem — real-time, cross-PSP, settlement-level reconciliation with CBN compliance output and a programmable API — is genuinely underserved in the Nigerian market. The competitors in that document are not solving it. They are solving related but distinct problems at a different layer of the financial stack.
+The specific problem — real-time, cross-PSP, settlement-level reconciliation with CBN-style daily return output (experimental, not a compliance product) and a programmable API — is genuinely underserved in the Nigerian market. The competitors in that document are not solving it. They are solving related but distinct problems at a different layer of the financial stack.
 
 Build this system well, position it precisely, and the conversation is not "why are you better than Klak?" The conversation is "Klak handles your accounting reconciliation. This handles your payment operations reconciliation. They solve different problems. You need both."
 

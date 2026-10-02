@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # QUALITY ASSURANCE & TESTING STRATEGY
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0
 **Author:** Emmanuel Richard
@@ -1315,7 +1317,7 @@ Together these eight documents mean that when the first line of code is written:
 - Every data model decision is already made and recorded
 - Every security control is specified before implementation — not retrofitted
 - Every test has a named correctness property it covers
-- Every regulatory requirement (NDPR, CBN) has a technical implementation
+- Every regulatory requirement (NDPA 2023, CBN) has a technical implementation
 - Every engineer joining the project later has a complete reference
 
 The build phase starts with the migration files and Docker Compose. Everything else follows the TDD implementation sequence. The documents don't change the code you write — they ensure you never have to make the same decision twice under implementation pressure.

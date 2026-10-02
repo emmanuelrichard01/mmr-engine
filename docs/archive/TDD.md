@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # TECHNICAL DESIGN DOCUMENT (TDD)
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0
 **Author:** Emmanuel Richard
@@ -112,8 +114,7 @@ mmr-engine/
 │   │   ├── __init__.py
 │   │   ├── base.py                 # Abstract base connector
 │   │   ├── paystack.py
-│   │   ├── flutterwave.py
-│   │   └── mpesa.py
+│   │   └── flutterwave.py
 │   │
 │   ├── contracts/                  # Pandera schema contracts
 │   │   ├── __init__.py
@@ -283,7 +284,6 @@ class Settings(BaseSettings):
     kafka_consumer_group_id: str = "bronze-writer-group"
     kafka_topic_paystack: str = "raw.paystack.events"
     kafka_topic_flutterwave: str = "raw.flutterwave.events"
-    kafka_topic_mpesa: str = "raw.mpesa.events"
     kafka_topic_polling: str = "raw.polling.fallback"
     kafka_topic_dead_letter: str = "pipeline.dead.letter"
     kafka_producer_acks: Literal["0", "1", "all"] = "all"
@@ -307,8 +307,6 @@ class Settings(BaseSettings):
     flutterwave_secret_hash: str = Field(
         description="Flutterwave webhook secret hash for HMAC verification."
     )
-    mpesa_consumer_key: str = ""
-    mpesa_consumer_secret: str = ""
 
     # ── FX Rate Provider ──────────────────────────────────────────────────
     fx_provider_api_key: str = Field(
@@ -430,8 +428,6 @@ MINIO_BRONZE_BUCKET=reconciliation-bronze
 PAYSTACK_SECRET_KEY=YOUR_PAYSTACK_SECRET_KEY_HERE
 FLUTTERWAVE_SECRET_KEY=YOUR_FLUTTERWAVE_SECRET_KEY_HERE
 FLUTTERWAVE_SECRET_HASH=your_flw_webhook_hash
-MPESA_CONSUMER_KEY=
-MPESA_CONSUMER_SECRET=
 
 # ── FX Rate Provider ──────────────────────────────────────────────────────
 FX_PROVIDER_API_KEY=your_exchangerate_api_key
@@ -1527,7 +1523,7 @@ from src.config import get_settings
 
 log = structlog.get_logger(__name__)
 
-SUPPORTED_PAIRS = ["NGN/USD", "NGN/GBP", "NGN/EUR", "NGN/KES"]
+SUPPORTED_PAIRS = ["NGN/USD", "NGN/GBP", "NGN/EUR"]
 
 
 async def capture_fx_rates(session: AsyncSession) -> list[dict]:
@@ -2351,7 +2347,6 @@ async def validate_and_publish_to_kafka(
     psp_tx_ref = (
         raw_payload.get("data", {}).get("reference")        # Paystack
         or raw_payload.get("data", {}).get("tx_ref")        # Flutterwave
-        or raw_payload.get("data", {}).get("TransID")       # M-Pesa
         or content_hash[:16]                                 # Fallback: hash prefix
     )
 
@@ -2377,7 +2372,6 @@ async def validate_and_publish_to_kafka(
     topic_map = {
         "paystack": settings.kafka_topic_paystack,
         "flutterwave": settings.kafka_topic_flutterwave,
-        "mpesa": settings.kafka_topic_mpesa,
     }
     topic = topic_map.get(psp_name, settings.kafka_topic_polling)
 
@@ -2755,7 +2749,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
-        title="Cross-Border Reconciliation Engine API",
+        title="MMR — Money Movement Reconciliation Engine API",
         version="1.0.0",
         description=(
             "Event-driven financial reconciliation API for multi-PSP "
@@ -3236,7 +3230,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Pipeline P95 latency exceeds 10s SLA"
+          summary: "Pipeline P95 latency exceeds 10s internal target"
           description: "Flow {{ $labels.flow_name }} P95 latency is {{ $value }}s"
 
       - alert: WebhookSignatureFailuresHigh
@@ -3922,7 +3916,7 @@ Webhook authentication              HMAC-SHA512 (Paystack)          FR-003
                                     verif-hash comparison (FLW)
 API authentication                  SHA-256 hashed key, DB lookup   NFR-009
 API rate limiting                   100 req/min per key             NFR-011
-PII storage                         Masked in Silver, raw in         NFR-009, NDPR
+PII storage                         Masked in Silver, raw in         NFR-009, NDPA 2023
                                     access-controlled Bronze only
 Secrets management                  Env vars, never in source code   NFR-010
 TLS enforcement                     Required for all external calls  NFR-008
@@ -3946,7 +3940,6 @@ Every open question from prior documents is resolved in this TDD:
 | PRD OQ-002 | DuckDB vs Postgres | PostgreSQL operational, DuckDB analytical (§5) |
 | PRD OQ-003 | FX provider | ExchangeRate-API MVP (§4 config) |
 | PRD OQ-004 | CBN report format | Modelled in dbt, JSONB payload (§3 dbt structure) |
-| PRD OQ-005 | M-Pesa type handling | Separate connector, normaliser handles type mapping (§8) |
 | PRD OQ-006 | Prefect vs Dagster | Prefect 3 (§5 stack, §10 flows) |
 
 ---
@@ -3987,7 +3980,7 @@ Week 5:  src/api/ → all routes, middleware, schemas
 Week 6:  src/observability/ → metrics, logging
          infra/prometheus/ + infra/grafana/
          make up-monitoring → verify dashboards
-         README.md → production-grade documentation
+         README.md → reference-implementation documentation
 ```
 
 Shall we proceed with the API Specification, or do you want to adjust anything in the TDD first?

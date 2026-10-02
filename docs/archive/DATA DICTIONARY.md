@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # DATA DICTIONARY
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0
 **Author:** Emmanuel Richard
@@ -27,7 +29,7 @@ This document is the reference for:
 
 ## 2. Sensitivity Classification
 
-Every field carries one of four sensitivity levels. This drives masking, logging, access control, and NDPR compliance decisions.
+Every field carries one of four sensitivity levels. This drives masking, logging, access control, and NDPA 2023 data-protection decisions.
 
 ```
 Level       Label           Meaning
@@ -37,7 +39,7 @@ INTERNAL    [INT]           Internal use only. Not for external API consumers.
                             Safe in structured logs with appropriate access controls.
 RESTRICTED  [RES]           Sensitive operational data. Role-gated. Not in logs.
                             API responses require 'admin' scope.
-PII         [PII]           Personal Identifiable Information under NDPR.
+PII         [PII]           Personal Identifiable Information under NDPA 2023.
                             Masked in Silver. Never in logs. Encrypted at rest.
                             Bronze Parquet only, MinIO access-controlled.
 ```
@@ -51,7 +53,6 @@ Used in the "Source" column to indicate where field values originate:
 ```
 [PSP-PY]    Paystack webhook or API response
 [PSP-FW]    Flutterwave webhook or API response
-[PSP-MP]    M-Pesa Daraja webhook or API response
 [SYS]       System-generated at ingestion time (UUID, timestamp, hash)
 [TRANSFORM] Computed during Bronze→Silver or Silver→Gold transform
 [CONFIG]    Read from silver_psp_settlement_windows or environment config
@@ -103,7 +104,7 @@ daily_report_flow:        {return_date, total_tx_count, submission_status}
 | Field | Type | Null | Sensitivity | Source | Business Definition | Valid Values | Example |
 |---|---|---|---|---|---|---|---|
 | `id` | UUID | No | [RES] | [SYS] | Unique identifier for this API key record. | Any valid UUID | `b5c6d7e8-f9a0-b1c2-d3e4-f5a6b7c8d9e0` |
-| `key_hash` | CHAR(64) | No | [RES] | [TRANSFORM] | SHA-256 hash of the raw API key. Used for constant-time comparison during authentication. The raw key is shown to the client exactly once at creation and is not recoverable thereafter. | 64-character lowercase hex string | `e3b0c44298fc1c149afb...` |
+| `key_hash` | CHAR(64) | No | [RES] | [TRANSFORM] | SHA-256 hash of the raw API key. Used for constant-time comparison during authentication. The raw key is shown to the client only once at creation and is not recoverable thereafter. | 64-character lowercase hex string | `e3b0c44298fc1c149afb...` |
 | `key_prefix` | VARCHAR(8) | No | [INT] | [TRANSFORM] | First 8 characters of the raw API key. Stored in plaintext to allow users to identify which key they are using without exposing the full key. Format: `reck_` + 3 random chars. | Alphanumeric, starts with `reck_` | `reck_A3f` |
 | `client_name` | VARCHAR(200) | No | [INT] | [MANUAL] | Human-readable name of the system or team this key belongs to. Used in audit logs and alert notifications. | Non-empty string | `Chioma Finance Dashboard` |
 | `client_description` | TEXT | Yes | [INT] | [MANUAL] | Optional longer description of the key's purpose and owner. | Free text | `Production key for Tunde's reconciliation API integration` |
@@ -146,9 +147,9 @@ daily_report_flow:        {return_date, total_tx_count, submission_status}
 | Field | Type | Null | Sensitivity | Source | Business Definition | Valid Values | Example |
 |---|---|---|---|---|---|---|---|
 | `id` | UUID | No | [INT] | [SYS] | Unique identifier for this ingestion record. Referenced by all Silver records to establish Bronze-to-Silver lineage. | Any valid UUID | `e8f9a0b1-c2d3-e4f5-a6b7-c8d9e0f1a2b3` |
-| `psp_name` | ENUM | No | [PUB] | [SYS] | The Payment Service Provider that originated the events in this Parquet file. | `paystack` `flutterwave` `mpesa` `moniepoint` | `paystack` |
+| `psp_name` | ENUM | No | [PUB] | [SYS] | The Payment Service Provider that originated the events in this Parquet file. | `paystack` `flutterwave` `moniepoint` | `paystack` |
 | `source_type` | ENUM | No | [INT] | [SYS] | Whether events arrived via real-time webhook push or via the polling fallback mechanism. This distinguishes events that arrived on time from events recovered by the fallback. | `webhook` `polling` | `webhook` |
-| `kafka_topic` | VARCHAR(200) | No | [INT] | [SYS] | The Kafka topic this batch of events was consumed from. Together with partition and offset, this uniquely identifies the message batch and enforces ingestion idempotency. | `raw.paystack.events` `raw.flutterwave.events` `raw.mpesa.events` `raw.polling.fallback` | `raw.paystack.events` |
+| `kafka_topic` | VARCHAR(200) | No | [INT] | [SYS] | The Kafka topic this batch of events was consumed from. Together with partition and offset, this uniquely identifies the message batch and enforces ingestion idempotency. | `raw.paystack.events` `raw.flutterwave.events` `raw.polling.fallback` | `raw.paystack.events` |
 | `kafka_partition` | INTEGER | No | [INT] | [SYS] | Kafka partition number within the topic. Combined with kafka_offset for the unique constraint that prevents duplicate ingestion. | ≥ 0, per topic partition count | `3` |
 | `kafka_offset` | BIGINT | No | [INT] | [SYS] | Kafka message offset within the partition. The unique constraint on (kafka_topic, kafka_partition, kafka_offset) is the primary idempotency guarantee for the Bronze layer. A message at a given offset can only be written once. | ≥ 0, monotonically increasing per partition | `100847` |
 | `content_hash` | CHAR(64) | No | [INT] | [TRANSFORM] | SHA-256 hash of the raw payload bytes before any processing. Used to detect duplicate payloads arriving via different Kafka offsets (e.g., PSP retry sends identical webhook twice via different message). A second Bronze record with the same hash should raise an operational alert even if the Kafka offset differs. | Lowercase hex, exactly 64 characters | `9f86d081884c7d659a2f...` |
@@ -170,7 +171,7 @@ daily_report_flow:        {return_date, total_tx_count, submission_status}
 | Field | Type | Null | Sensitivity | Source | Business Definition | Valid Values | Example |
 |---|---|---|---|---|---|---|---|
 | `id` | UUID | No | [INT] | [SYS] | Unique identifier for this rate snapshot. Referenced by `silver_canonical_transactions.fx_rate_snapshot_id`. | Any valid UUID | `f9a0b1c2-d3e4-f5a6-b7c8-d9e0f1a2b3c4` |
-| `currency_pair` | VARCHAR(7) | No | [PUB] | [SYS] | The exchange rate pair expressed as BASE/QUOTE. In this system NGN is always the base currency — we express the cost of 1 NGN in the quote currency. Format validated by CHECK constraint: must match `^[A-Z]{3}/[A-Z]{3}$`. | `NGN/USD` `NGN/GBP` `NGN/EUR` `NGN/KES` | `NGN/USD` |
+| `currency_pair` | VARCHAR(7) | No | [PUB] | [SYS] | The exchange rate pair expressed as BASE/QUOTE. In this system NGN is always the base currency — we express the cost of 1 NGN in the quote currency. Format validated by CHECK constraint: must match `^[A-Z]{3}/[A-Z]{3}$`. | `NGN/USD` `NGN/GBP` `NGN/EUR` | `NGN/USD` |
 | `rate` | NUMERIC(20,8) | No | [PUB] | [PSP-PY]/[PSP-FW]/[CONFIG] | The mid-market exchange rate at the time of capture. Expressed as: 1 NGN = {rate} {quote_currency}. Example: rate = 0.00063291 means 1 NGN = 0.00063291 USD, or equivalently 1 USD = 1580 NGN. | > 0 | `0.00063291` |
 | `bid` | NUMERIC(20,8) | Yes | [INT] | [CONFIG] | The buy-side rate from the provider. The rate at which the market buys NGN (lower than ask). NULL when the rate source provides only a mid-market rate. | > 0, ≤ ask | `0.00063200` |
 | `ask` | NUMERIC(20,8) | Yes | [INT] | [CONFIG] | The sell-side rate from the provider. The rate at which the market sells NGN (higher than bid). NULL when the rate source provides only a mid-market rate. | > 0, ≥ bid | `0.00063382` |
@@ -196,13 +197,13 @@ daily_report_flow:        {return_date, total_tx_count, submission_status}
 | `idempotency_key` | VARCHAR(200) | No | [INT] | [TRANSFORM] | Composite deduplication key. Format: `{psp_name}:{psp_transaction_ref}:{event_type}`. The UNIQUE constraint on this column is the primary guarantee that a PSP event is never processed twice into Silver, regardless of how many times the webhook fires. | Non-empty string, format enforced at transform layer | `paystack:T_abc123xyz:charge.success` |
 | `internal_ref` | VARCHAR(100) | No | [INT] | [SYS] | Human-readable internal reference number for this transaction. Used by support teams and in CBN reports. Prefixed with `REC-` followed by a UUID fragment. Safe to share in emails and tickets — contains no PII. | `REC-` + 32 uppercase alphanumeric chars | `REC-A3F9B2C1D4E5F6A7B8C9D0E1F2A3B4` |
 | `bronze_ingestion_id` | UUID | No | [INT] | [SYS] | FK to `bronze_ingestion_log.id`. Traces this Silver record back to the exact Bronze Parquet file from which it was derived. The foundation of Bronze-to-Silver lineage. | Valid UUID | `e8f9a0b1-c2d3-e4f5-a6b7-c8d9e0f1a2b3` |
-| `psp_name` | ENUM | No | [PUB] | [PSP-PY]/[PSP-FW]/[PSP-MP] | The Payment Service Provider that originated this transaction event. | `paystack` `flutterwave` `mpesa` `moniepoint` | `paystack` |
-| `psp_transaction_ref` | VARCHAR(200) | No | [INT] | [PSP-PY]/[PSP-FW]/[PSP-MP] | The PSP's own reference number for this transaction. Not globally unique — Paystack and Flutterwave may issue references that collide. Unique only within a given PSP. Always combined with `psp_name` for lookups. | Non-empty string, format varies by PSP | `T_abc123xyz789` |
-| `psp_event_type` | VARCHAR(100) | No | [INT] | [PSP-PY]/[PSP-FW]/[PSP-MP] | The webhook event type exactly as received from the PSP. Preserved from the raw payload. Used for classifying transaction_type during Silver transform. | Paystack: `charge.success` `transfer.success` `transfer.failed` Flutterwave: `charge.completed` `transfer.completed` M-Pesa: `PaymentRequest` | `charge.success` |
+| `psp_name` | ENUM | No | [PUB] | [PSP-PY]/[PSP-FW] | The Payment Service Provider that originated this transaction event. | `paystack` `flutterwave` `moniepoint` | `paystack` |
+| `psp_transaction_ref` | VARCHAR(200) | No | [INT] | [PSP-PY]/[PSP-FW] | The PSP's own reference number for this transaction. Not globally unique — Paystack and Flutterwave may issue references that collide. Unique only within a given PSP. Always combined with `psp_name` for lookups. | Non-empty string, format varies by PSP | `T_abc123xyz789` |
+| `psp_event_type` | VARCHAR(100) | No | [INT] | [PSP-PY]/[PSP-FW] | The webhook event type exactly as received from the PSP. Preserved from the raw payload. Used for classifying transaction_type during Silver transform. | Paystack: `charge.success` `transfer.success` `transfer.failed` Flutterwave: `charge.completed` `transfer.completed` | `charge.success` |
 | `psp_event_received_at` | TIMESTAMPTZ | No | [INT] | [SYS] | UTC timestamp when the PSP webhook event arrived at the FastAPI ingestion gateway. This is the system's receipt time — not the time the transaction occurred on the PSP's side. Distinction matters for settlement lag calculation. | Valid timestamp ≤ NOW() | `2026-05-01T08:14:32.841Z` |
 | `transaction_type` | ENUM | No | [PUB] | [TRANSFORM] | Canonical classification of the transaction direction. Derived from `psp_event_type` during Silver transform using a PSP-specific mapping table. | `credit` `debit` `reversal` | `credit` |
-| `amount_raw` | NUMERIC(20,6) | No | [INT] | [PSP-PY]/[PSP-FW]/[PSP-MP] | Transaction amount in the original currency as reported by the PSP. Never rounded or modified. If the PSP reports NGN 50,000.00 this stores `50000.000000`. Stored with 6 decimal places even for currencies that use 2, to preserve precision if source data changes. | ≥ 0 | `50000.000000` |
-| `currency_raw` | CHAR(3) | No | [PUB] | [PSP-PY]/[PSP-FW]/[PSP-MP] | ISO 4217 currency code of the original transaction as reported by the PSP. For Paystack NGN transactions this will always be `NGN`. For Flutterwave cross-border transactions this may be `USD`, `GBP`, or `KES`. | `NGN` `USD` `GBP` `EUR` `KES` | `NGN` |
+| `amount_raw` | NUMERIC(20,6) | No | [INT] | [PSP-PY]/[PSP-FW] | Transaction amount in the original currency as reported by the PSP. Never rounded or modified. If the PSP reports NGN 50,000.00 this stores `50000.000000`. Stored with 6 decimal places even for currencies that use 2, to preserve precision if source data changes. | ≥ 0 | `50000.000000` |
+| `currency_raw` | CHAR(3) | No | [PUB] | [PSP-PY]/[PSP-FW] | ISO 4217 currency code of the original transaction as reported by the PSP. For Paystack NGN transactions this will always be `NGN`. For Flutterwave cross-border transactions this may be `USD` or `GBP`. | `NGN` `USD` `GBP` `EUR` | `NGN` |
 | `amount_ngn` | NUMERIC(20,6) | No | [INT] | [TRANSFORM] | Transaction amount converted to Nigerian Naira. The canonical amount used by all matching and reporting logic. If `currency_raw = 'NGN'`, this equals `amount_raw` exactly. If foreign currency, this is `amount_raw / fx_rate_applied` at the settlement timestamp's rate. | ≥ 0 | `50000.000000` |
 | `fx_rate_snapshot_id` | UUID | Yes | [INT] | [TRANSFORM] | FK to `silver_fx_rate_snapshots.id`. The specific rate snapshot used to compute `amount_ngn`. NULL only when `currency_raw = 'NGN'` (no FX conversion required). The CHECK constraint enforces that this is non-NULL for all non-NGN transactions. | Valid UUID or NULL (if currency_raw = NGN) | `f9a0b1c2-d3e4-f5a6-b7c8-d9e0f1a2b3c4` |
 | `fx_rate_applied` | NUMERIC(20,8) | Yes | [INT] | [TRANSFORM] | The exact exchange rate used in the NGN conversion for this transaction. Stored redundantly with the snapshot reference for direct audit without a join. NULL when `currency_raw = 'NGN'`. Example: `0.00063291` means 1 NGN = 0.00063291 USD, so USD 31.645 ÷ 0.00063291 = NGN 50,000. | > 0, or NULL | `0.00063291` |
@@ -213,14 +214,14 @@ daily_report_flow:        {return_date, total_tx_count, submission_status}
 | `beneficiary_bank_code` | VARCHAR(10) | Yes | [PUB] | [PSP-PY]/[PSP-FW] | CBN-assigned bank sort code of the beneficiary's financial institution. Public data. Used in matching logic as a high-confidence identifier alongside account number. | 3–6 digit CBN bank code | `011` |
 | `beneficiary_bank_name` | VARCHAR(200) | Yes | [PUB] | [TRANSFORM] | Full name of the beneficiary's bank. Derived from `beneficiary_bank_code`. | Full bank name string | `First Bank of Nigeria` |
 | `beneficiary_name_masked` | VARCHAR(200) | Yes | [PII] | [TRANSFORM] | **PII field.** Account name of the beneficiary, masked during Silver transform. Masking format: first character of each name component followed by asterisks matching remaining length. `Chioma Okonkwo` → `C****** O*******`. The trigram index on this field enables fuzzy name matching in the probabilistic matching engine. | Masked name format, or NULL | `C****** O*******` |
-| `narration` | TEXT | Yes | [INT] | [PSP-PY]/[PSP-FW]/[PSP-MP] | Transaction narration or description as provided by the initiating party. Truncated to 500 characters during Silver transform. PII-scrubbing is applied — patterns matching NUBAN account numbers, BVN numbers (11 digits), and phone numbers are replaced with `[REDACTED]` before storage. | Truncated, PII-scrubbed free text | `Payment for order #INV-2026-0501-A` |
-| `initiated_at` | TIMESTAMPTZ | No | [INT] | [PSP-PY]/[PSP-FW]/[PSP-MP] | UTC timestamp when the transaction was initiated by the originating party on the PSP's platform. This is the PSP's own reported transaction time, not the webhook receipt time. The primary time dimension for matching window calculations and CBN daily reports. | Valid timestamp ≤ NOW() | `2026-05-01T08:12:00.000Z` |
-| `settled_at` | TIMESTAMPTZ | Yes | [INT] | [PSP-PY]/[PSP-FW]/[PSP-MP] | UTC timestamp when settlement was confirmed by the PSP. NULL for transactions in `pending` status. Updated via the polling fallback flow when settlement confirmation arrives after the initial webhook. Must be ≥ `initiated_at` — enforced by CHECK constraint. | Valid timestamp ≥ `initiated_at`, or NULL | `2026-05-02T10:23:00.000Z` |
+| `narration` | TEXT | Yes | [INT] | [PSP-PY]/[PSP-FW] | Transaction narration or description as provided by the initiating party. Truncated to 500 characters during Silver transform. PII-scrubbing is applied — patterns matching NUBAN account numbers, BVN numbers (11 digits), and phone numbers are replaced with `[REDACTED]` before storage. | Truncated, PII-scrubbed free text | `Payment for order #INV-2026-0501-A` |
+| `initiated_at` | TIMESTAMPTZ | No | [INT] | [PSP-PY]/[PSP-FW] | UTC timestamp when the transaction was initiated by the originating party on the PSP's platform. This is the PSP's own reported transaction time, not the webhook receipt time. The primary time dimension for matching window calculations and CBN daily reports. | Valid timestamp ≤ NOW() | `2026-05-01T08:12:00.000Z` |
+| `settled_at` | TIMESTAMPTZ | Yes | [INT] | [PSP-PY]/[PSP-FW] | UTC timestamp when settlement was confirmed by the PSP. NULL for transactions in `pending` status. Updated via the polling fallback flow when settlement confirmation arrives after the initial webhook. Must be ≥ `initiated_at` — enforced by CHECK constraint. | Valid timestamp ≥ `initiated_at`, or NULL | `2026-05-02T10:23:00.000Z` |
 | `expected_settlement_at` | TIMESTAMPTZ | Yes | [INT] | [TRANSFORM] | Computed UTC timestamp of when settlement is expected based on `silver_psp_settlement_windows` configuration for this PSP and transaction type. Computed during Silver transform using the settlement window active at `initiated_at`. Used to drive SLA breach detection and the polling fallback trigger. NULL if no settlement window is configured for this PSP/type combination. | Valid timestamp > `initiated_at`, or NULL | `2026-05-02T17:00:00.000Z` |
 | `settlement_sla_breached` | BOOLEAN | No | [INT] | [TRIGGER] | Computed column. TRUE when settlement arrived after the SLA deadline: `settled_at IS NOT NULL AND expected_settlement_at IS NOT NULL AND settled_at > expected_settlement_at`. The "not yet settled but overdue" check is handled at the application/query layer (materialized view, API) because `GENERATED ALWAYS AS` requires `IMMUTABLE` functions and `NOW()` is `STABLE`. | `TRUE` `FALSE` | `FALSE` |
 | `settlement_status` | ENUM | No | [INT] | [SYS]/[TRIGGER] | Current status of this transaction's settlement lifecycle. Updated by the Silver transform on status-change events and by the polling fallback when new PSP data arrives. Changes to this field are automatically recorded in `silver_transaction_audit_log` by the database trigger. | `pending` = awaiting settlement `settled` = settlement confirmed `failed` = PSP confirmed failure `reversed` = transaction reversed post-settlement `disputed` = under dispute resolution | `settled` |
 | `has_pii_masked` | BOOLEAN | No | [INT] | [TRANSFORM] | Explicit flag set to TRUE by the Silver transform after all PII fields have been masked. The CHECK constraint enforces this is always TRUE — a Silver write with FALSE or NULL fails at the database level. This prevents a pipeline bug from silently writing unmasked PII to Silver. | Always `TRUE` in valid records | `TRUE` |
-| `psp_metadata` | JSONB | No | [INT] | [PSP-PY]/[PSP-FW]/[PSP-MP] | PSP-specific fields that have no equivalent in the canonical schema. Captured to preserve information that may be needed for edge-case debugging or future schema extension. Never contains PII — PII fields in PSP metadata are stripped during transform. | Valid JSON object, default `{}` | Paystack: `{"channel": "card", "fees": 1450}` Flutterwave: `{"app_fee": 200, "merchant_fee": 1250}` |
+| `psp_metadata` | JSONB | No | [INT] | [PSP-PY]/[PSP-FW] | PSP-specific fields that have no equivalent in the canonical schema. Captured to preserve information that may be needed for edge-case debugging or future schema extension. Never contains PII — PII fields in PSP metadata are stripped during transform. | Valid JSON object, default `{}` | Paystack: `{"channel": "card", "fees": 1450}` Flutterwave: `{"app_fee": 200, "merchant_fee": 1250}` |
 | `processed_by_run_id` | UUID | No | [INT] | [SYS] | FK to `system_pipeline_runs.id`. The pipeline run that created this Silver record. Enables complete lineage from Gold output → Silver record → Bronze file → pipeline run → triggering webhook. | Valid UUID | `a3f9b2c1-d4e5-f6a7-b8c9-d0e1f2a3b4c5` |
 | `created_at` | TIMESTAMPTZ | No | [INT] | [SYS] | UTC timestamp when this Silver record was first written. Never updated. | Valid timestamp ≤ NOW() | `2026-05-01T08:14:35.203Z` |
 | `updated_at` | TIMESTAMPTZ | No | [INT] | [TRIGGER] | UTC timestamp of the most recent change to this record. Updated automatically by the database trigger on any field change. | Valid timestamp ≥ `created_at` | `2026-05-02T10:23:01.441Z` |
@@ -248,7 +249,7 @@ daily_report_flow:        {return_date, total_tx_count, submission_status}
 | Field | Type | Null | Sensitivity | Source | Business Definition | Valid Values | Example |
 |---|---|---|---|---|---|---|---|
 | `id` | UUID | No | [INT] | [SYS] | Unique identifier for this settlement window configuration record. | Any valid UUID | `b2c3d4e5-f6a7-b8c9-d0e1-f2a3b4c5d6e7` |
-| `psp_name` | ENUM | No | [PUB] | [MANUAL] | The PSP this settlement window applies to. | `paystack` `flutterwave` `mpesa` `moniepoint` | `paystack` |
+| `psp_name` | ENUM | No | [PUB] | [MANUAL] | The PSP this settlement window applies to. | `paystack` `flutterwave` `moniepoint` | `paystack` |
 | `transaction_type` | ENUM | No | [PUB] | [MANUAL] | The transaction type this window applies to. Different transaction types within the same PSP may settle at different speeds. | `credit` `debit` `reversal` | `credit` |
 | `account_tier` | VARCHAR(50) | No | [PUB] | [MANUAL] | The merchant account tier this window applies to. PSPs offer tiered accounts with different settlement speeds. `standard` is the default. | `standard` `growth` `enterprise` | `standard` |
 | `settlement_lag_hours` | NUMERIC(5,2) | No | [PUB] | [MANUAL] | The expected number of hours between transaction initiation and settlement credit. Examples: 24.0 = T+1 business day, 1.5 = 90 minutes for faster tiers. This is a SLA expectation, not a guarantee. | > 0 | `24.00` |
@@ -443,7 +444,7 @@ late_settlement:
 |---|---|---|---|---|---|---|---|
 | `id` | UUID | No | [INT] | [SYS] | Unique identifier. | Any valid UUID | `a7b8c9d0-e1f2-a3b4-c5d6-e7f8a9b0c1d2` |
 | `snapshot_date` | DATE | No | [INT] | [DBT] | The calendar date (WAT) this exposure snapshot represents. Combined with `psp_name` and `classification` forms the UNIQUE key. | Valid past date | `2026-05-01` |
-| `psp_name` | ENUM | No | [INT] | [DBT] | The PSP this exposure row covers. | `paystack` `flutterwave` `mpesa` `moniepoint` | `paystack` |
+| `psp_name` | ENUM | No | [INT] | [DBT] | The PSP this exposure row covers. | `paystack` `flutterwave` `moniepoint` | `paystack` |
 | `classification` | ENUM | No | [INT] | [DBT] | The discrepancy type this exposure row covers. One row per (date, PSP, classification) combination. | All values from `discrepancy_class_enum` | `missing_settlement` |
 | `open_discrepancy_count` | INTEGER | No | [INT] | [DBT] | Count of open discrepancies of this classification for this PSP on this date. | ≥ 0 | `3` |
 | `total_exposure_ngn` | NUMERIC(20,6) | No | [INT] | [DBT] | Sum of `estimated_exposure_ngn` for all open discrepancies of this classification/PSP/date. | ≥ 0 | `150000.000000` |
@@ -541,7 +542,7 @@ Table                               Field                       dbt Test
 ─────────────────────────────────── ─────────────────────────── ──────────────────────────────────────
 silver_canonical_transactions       idempotency_key             unique, not_null
 silver_canonical_transactions       amount_ngn                  not_null, greater_than_or_equal_to_zero
-silver_canonical_transactions       currency_raw                accepted_values: [NGN,USD,GBP,EUR,KES]
+silver_canonical_transactions       currency_raw                accepted_values: [NGN,USD,GBP,EUR]
 silver_canonical_transactions       settlement_status           accepted_values, not_null
 silver_canonical_transactions       has_pii_masked              accepted_values: [true]
 silver_idempotency_keys             key                         unique, not_null

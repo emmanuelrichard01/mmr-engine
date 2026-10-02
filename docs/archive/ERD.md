@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # ENTITY RELATIONSHIP DIAGRAM & DATABASE SCHEMA
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0
 **Author:** Emmanuel Richard
@@ -17,7 +19,7 @@ The Data Architecture Blueprint defined *what* data flows through the system and
 This document governs three things simultaneously:
 
 - **The ERD** — visual representation of entity relationships across all layers
-- **The complete DDL** — production-ready SQL `CREATE` statements for every table
+- **The complete DDL** — SQL `CREATE` statements for every table
 - **The schema decision log** — why specific type choices, constraints, and index strategies were made
 
 Any discrepancy between this document and actual database migrations is a bug in the migration, not in this document.
@@ -123,7 +125,7 @@ GOLD            gold_reconciliation_summary         Mat. View   Aggregated daily
 ║  │  bronze_ingestion_log                                           │                    ║
 ║  ├─────────────────────────────────────────────────────────────────┤                    ║
 ║  │ PK  id: UUID                                                    │                    ║
-║  │     psp_name: ENUM         -- paystack|flutterwave|mpesa        │                    ║
+║  │     psp_name: ENUM         -- paystack|flutterwave              │                    ║
 ║  │     source_type: ENUM      -- webhook|polling                   │                    ║
 ║  │     kafka_topic: VARCHAR                                        │                    ║
 ║  │     kafka_partition: INT                                        │                    ║
@@ -400,7 +402,6 @@ CREATE SCHEMA IF NOT EXISTS gold_layer;
 CREATE TYPE psp_name_enum AS ENUM (
     'paystack',
     'flutterwave',
-    'mpesa',
     'moniepoint'
 );
 
@@ -630,7 +631,7 @@ CREATE TABLE silver_fx_rate_snapshots (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     currency_pair       VARCHAR(7) NOT NULL,
         -- Format: {BASE}/{QUOTE} — always NGN as base for this system
-        -- Valid: NGN/USD, NGN/GBP, NGN/EUR, NGN/KES
+        -- Valid: NGN/USD, NGN/GBP, NGN/EUR
     rate                NUMERIC(20, 8) NOT NULL CHECK (rate > 0),
     bid                 NUMERIC(20, 8) CHECK (bid > 0),
     ask                 NUMERIC(20, 8) CHECK (ask > 0),
@@ -731,7 +732,7 @@ CREATE TABLE silver_canonical_transactions (
     amount_raw                  NUMERIC(20, 6) NOT NULL
         CHECK (amount_raw >= 0),
     currency_raw                CHAR(3) NOT NULL,
-        -- ISO 4217: NGN, USD, GBP, EUR, KES
+        -- ISO 4217: NGN, USD, GBP, EUR
     amount_ngn                  NUMERIC(20, 6) NOT NULL
         CHECK (amount_ngn >= 0),
     fx_rate_snapshot_id         UUID

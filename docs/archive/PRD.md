@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # PRODUCT REQUIREMENTS DOCUMENT
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0 — Pre-Engineering Draft
 **Author:** Emmanuel Richard
@@ -13,11 +15,11 @@
 
 ### 1.1 The Core Problem
 
-Every Nigerian business that operates across multiple payment service providers — and in 2026, that is most serious businesses — has a reconciliation gap. Money moves through Paystack, Flutterwave, Moniepoint, and M-Pesa simultaneously. Settlement is asynchronous. Reference IDs are not shared across providers. FX rates shift between transaction initiation and settlement. Webhooks arrive out of order, duplicate, or not at all.
+Every Nigerian business that operates across multiple payment service providers — and in 2026, that is most serious businesses — has a reconciliation gap. Money moves through Paystack, Flutterwave, and Moniepoint simultaneously. Settlement is asynchronous. Reference IDs are not shared across providers. FX rates shift between transaction initiation and settlement. Webhooks arrive out of order, duplicate, or not at all.
 
 The result: businesses cannot, at any given moment, answer the most fundamental financial question — **"Did all the money that should have arrived, actually arrive, in the correct amount?"**
 
-The current solution is manual: spreadsheets, phone calls to PSP support lines, and a finance team that spends 30–40% of its time on reconciliation instead of financial analysis. The error rate is non-trivial — industry estimates for manual B2B reconciliation error rates range from 3–8% of transaction volume. At scale, this is millions of naira in undetected discrepancies monthly.
+The current solution is manual: spreadsheets, phone calls to PSP support lines, and a finance team that spends significant time on manual reconciliation instead of financial analysis. Manual reconciliation is error-prone. At scale, this is millions of naira in undetected discrepancies monthly.
 
 ### 1.2 The Nigerian-Specific Dimensions
 
@@ -25,24 +27,24 @@ This problem has characteristics specific to the Nigerian and West African opera
 
 **FX Volatility and Rate Timing:** The Naira's exchange rate against USD, GBP, and other currencies can move significantly within a single settlement window. A transaction initiated at NGN 1,580/USD that settles 4 hours later at NGN 1,610/USD has a legitimate FX discrepancy that is not a reconciliation failure. The system must distinguish FX timing variances from genuine settlement failures.
 
-**Multi-PSP Settlement Lag Variance:** Paystack settles to Nigerian banks on T+1 business days. Flutterwave settlement windows vary by account tier and transaction type. M-Pesa cross-border settlements operate on different cycles. A reconciliation engine that applies a single expected settlement window will produce false positives continuously.
+**Multi-PSP Settlement Lag Variance:** Paystack settles to Nigerian banks on T+1 business days. Flutterwave settlement windows vary by account tier and transaction type. A reconciliation engine that applies a single expected settlement window will produce false positives continuously.
 
 **Webhook Unreliability:** Nigerian internet infrastructure means PSP webhooks are delivered unreliably. The same payment event can arrive zero times, once, or multiple times. The engine must be idempotent and must have a fallback polling mechanism for missed webhook events.
 
-**CBN Regulatory Reporting:** The Central Bank of Nigeria requires licensed fintechs to produce specific returns — daily transaction reports, suspicious transaction reports, cross-border transfer declarations. A reconciliation engine operating in this market must produce CBN-compliant output, not just internal analytics.
+**CBN Regulatory Reporting:** The Central Bank of Nigeria requires licensed fintechs to produce specific returns — daily transaction reports, suspicious transaction reports, cross-border transfer declarations. A reconciliation engine operating in this market must produce a CBN-style daily return (experimental, not a compliance product), not just internal analytics.
 
-**NDPR Compliance:** The Nigeria Data Protection Regulation applies to all personal financial data processed in Nigeria. The system must handle PII (account numbers, BVN references, names) with appropriate controls.
+**NDPA 2023 Data Protection:** The Nigeria Data Protection Act 2023 (NDPA) applies to all personal financial data processed in Nigeria. The system must handle PII (account numbers, BVN references, names) with appropriate controls.
 
 ### 1.3 What the Market Has Now
 
 | Current Solution | Limitation |
 | --- | --- |
-| Manual spreadsheet reconciliation | Error-prone, 30–40% of finance team time, no audit trail |
+| Manual spreadsheet reconciliation | Error-prone, time-consuming for finance teams, no audit trail |
 | PSP-native dashboards | Single-provider only, no cross-PSP view, no automated matching |
 | Enterprise ERP reconciliation modules | Priced for Fortune 500, not built for Nigerian PSP APIs, require 6-month implementations |
 | Generic accounting software (QuickBooks, Sage) | No real-time PSP integration, no Nigerian-specific FX handling, no CBN reporting |
 
-**The gap:** No tool exists that is built specifically for the multi-PSP Nigerian operating environment, handles FX timing correctly, is priced for African businesses, and produces CBN-compliant output automatically.
+**The gap:** No tool exists that is built specifically for the multi-PSP Nigerian operating environment, handles FX timing correctly, is priced for African businesses, and produces a CBN-style daily return (experimental, not a compliance product) automatically.
 
 ---
 
@@ -54,20 +56,20 @@ This problem has characteristics specific to the Nigerian and West African opera
 | --- | --- | --- |
 | Reconciliation completeness | % of transactions matched across PSPs | ≥ 99.5% |
 | False positive rate | % of flagged discrepancies that are not real | < 0.5% |
-| Processing latency | Time from webhook receipt to reconciliation decision | < 10 seconds |
+| Processing latency | Time from webhook receipt to reconciliation decision | Low-latency ingestion (an internal pipeline target, not a settlement SLA; PSP settlement is typically T+1) |
 | System availability | Uptime during Nigerian business hours (WAT 08:00–22:00) | ≥ 99.9% |
 | Idempotency | Duplicate webhook events that result in duplicate records | 0 |
 | FX accuracy | Rate applied within correct settlement window | 100% |
-| CBN report generation | Time to generate compliant daily return | < 60 seconds |
+| CBN report generation | Time to generate CBN-style daily return (experimental, not a compliance product) | < 60 seconds |
 
 ### 2.2 Portfolio Goals
 
 This project must demonstrate the following to technical reviewers:
 
 - Stream engineering: real event processing, not batch simulation
-- Exactly-once semantics: a solved hard problem, not acknowledged and ignored
+- Effectively-once semantics (idempotency keys + UNIQUE constraints + at-least-once delivery from Redpanda): a solved hard problem, not acknowledged and ignored
 - Domain depth: FX timing, PSP settlement models, CBN compliance — not generic pipeline work
-- Production-grade reliability: failure modes identified, handled, and tested
+- Reliability: failure modes identified, handled, and tested
 - African market specificity: decisions that only make sense if you understand this market
 
 ---
@@ -77,7 +79,7 @@ This project must demonstrate the following to technical reviewers:
 ### 3.1 In Scope — MVP (Phase 1)
 
 - Webhook ingestion from Paystack and Flutterwave (test environments)
-- Idempotent event processing with exactly-once guarantees
+- Idempotent event processing with effectively-once semantics
 - Cross-PSP transaction matching engine with configurable matching rules
 - FX rate integration with point-in-time rate lookup
 - Bronze → Silver → Gold Medallion pipeline
@@ -85,11 +87,10 @@ This project must demonstrate the following to technical reviewers:
 - REST API for reconciliation report queries
 - Basic dashboard for reconciliation status
 - Structured logging and pipeline observability
-- NDPR-compliant PII handling (masking, access controls)
+- NDPA 2023-aligned PII handling (masking, access controls)
 
 ### 3.2 In Scope — Phase 2
 
-- M-Pesa Daraja API integration
 - Moniepoint webhook integration
 - CBN daily return report generation (machine-readable format)
 - Slack and email alerting for unresolved discrepancies
@@ -127,7 +128,7 @@ This project must demonstrate the following to technical reviewers:
 
 **Name:** Aisha, Head of Compliance at a licensed microfinance bank
 **Context:** Required to submit daily transaction reports to CBN. Currently produces these manually from PSP dashboards. Audit trail is weak.
-**Goal:** Automated CBN-compliant report generation with full audit trail. Reduce regulatory risk.
+**Goal:** Automated CBN-style daily return (experimental, not a compliance product) generation with full audit trail. Reduce regulatory risk.
 
 ---
 
@@ -161,7 +162,7 @@ This project must demonstrate the following to technical reviewers:
 
 ### 5.3 FX Rate Engine
 
-**FR-012:** The system SHALL capture FX rates at ingestion time for all supported currency pairs (NGN/USD, NGN/GBP, NGN/EUR, NGN/KES) from a configurable rate source.
+**FR-012:** The system SHALL capture FX rates at ingestion time for all supported currency pairs (NGN/USD, NGN/GBP, NGN/EUR) from a configurable rate source.
 
 **FR-013:** Rate lookups for historical transactions SHALL use the rate captured at the closest available timestamp to the transaction settlement time, not the current rate.
 
@@ -187,7 +188,7 @@ This project must demonstrate the following to technical reviewers:
 
 **NFR-001:** Webhook processing (receipt to Bronze persistence) SHALL complete in < 500ms at P99.
 
-**NFR-002:** Full reconciliation pipeline (Bronze to Gold) SHALL complete in < 10 seconds for a single transaction event.
+**NFR-002:** Full reconciliation pipeline (Bronze to Gold) SHALL complete in < 10 seconds for a single transaction event (an internal pipeline target, not a settlement SLA; PSP settlement is typically T+1).
 
 **NFR-003:** The API SHALL return responses in < 200ms at P95 for all read endpoints under normal load (< 100 concurrent requests).
 
@@ -195,7 +196,7 @@ This project must demonstrate the following to technical reviewers:
 
 ### 6.2 Reliability
 
-**NFR-005:** The pipeline SHALL guarantee at-least-once processing for all ingested events. Combined with idempotency (FR-004), this achieves exactly-once semantics.
+**NFR-005:** The pipeline SHALL guarantee at-least-once processing for all ingested events. Combined with idempotency (FR-004), this achieves effectively-once semantics (idempotency keys + UNIQUE constraints + at-least-once delivery from Redpanda).
 
 **NFR-006:** A pipeline failure at any stage SHALL NOT result in data loss. Events in the Bronze layer SHALL be reprocessable at any time.
 
@@ -211,7 +212,7 @@ This project must demonstrate the following to technical reviewers:
 
 **NFR-011:** The system SHALL implement rate limiting on all public endpoints: 100 requests per minute per API key.
 
-### 6.4 NDPR Compliance
+### 6.4 NDPA 2023 Data Protection
 
 **NFR-012:** Personal financial data SHALL be retained for a maximum of 7 years in line with CBN record-keeping requirements, after which it SHALL be deleted or anonymised.
 
@@ -230,8 +231,6 @@ This project must demonstrate the following to technical reviewers:
 **TC-003:** The system must run on a single server (4 vCPU, 8GB RAM) for portfolio deployment. Architecture must be horizontally scalable in design even if not deployed that way initially.
 
 **TC-004:** CBN report format will be modelled on publicly available CBN return templates. Exact schema may require adjustment for live compliance use.
-
-**TC-005:** M-Pesa integration requires a registered Safaricom developer account. Daraja sandbox is available for testing cross-border scenarios.
 
 ---
 
@@ -258,7 +257,6 @@ The MVP is complete when the following are demonstrable end-to-end in a live env
 | OQ-002 | DuckDB vs. Postgres for Silver/Gold layers given concurrent write requirements? | Data integrity, performance | TDD |
 | OQ-003 | Which FX rate provider has the best NGN pair coverage at acceptable cost? | FX accuracy | Research |
 | OQ-004 | Exact CBN daily return format — which template applies to this use case? | Compliance | Research |
-| OQ-005 | How to handle M-Pesa's B2C vs. C2B transaction type differences in the canonical schema? | Data model | TDD |
 | OQ-006 | Prefect vs. Dagster for orchestration — which has better Docker Compose story? | DevEx | TDD |
 
 ---
@@ -275,6 +273,6 @@ That PRD is your anchor document. Every subsequent document derives from it. Her
 
 **Then: API Specification** — OpenAPI 3.1 spec, exact endpoint definitions, request/response schemas, error codes.
 
-**Then: Data Governance & Security Policy** — NDPR compliance framework, RBAC design, encryption standards, audit log specification.
+**Then: Data Governance & Security Policy** — NDPA 2023 data protection framework, RBAC design, encryption standards, audit log specification.
 
 We can work through each one properly. Which do you want to tackle next — the Data Architecture Blueprint, or do you want to make any adjustments to the PRD first?

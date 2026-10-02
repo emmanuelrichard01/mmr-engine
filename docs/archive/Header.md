@@ -1,3 +1,5 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # Project Documentation — Reading Order
 
 > **Purpose:** Master index for all specification documents.  
@@ -36,17 +38,17 @@
 
 | # | Document | Purpose |
 |---|----------|---------|
-| 12 | [OPERATIONS.md](OPERATIONS.md) | Dashboard walkthrough, data flow, demo mode, scripts, troubleshooting |
+| 12 | [OPERATIONS.md](../OPERATIONS.md) | Dashboard walkthrough, data flow, demo mode, scripts, troubleshooting |
 
 ---
 
-## Implementation Status
+## Implementation Status (historical; see the top-level README for what is actually built)
 
 | Week | Milestone | Status |
 |------|-----------|--------|
-| 1 | Infrastructure — Docker, Migrations, Observability | ✅ Complete |
-| 2 | Engine Core — Idempotency, PII, FX, Normalisers | ✅ Complete |
-| 3 | Pipeline — Prefect Flows, Pandera Contracts, Kafka Consumer | ✅ Complete |
-| 4 | Gold Layer — Matching Engine, Discrepancy Classifier | ✅ Complete |
-| 5 | API + Alerting — Routes, Auth, Rate Limiting, Slack | ✅ Complete |
-| 6 | Dashboard + Onboarding + Observability + Polish | ✅ Complete |
+| 1 | Infrastructure — Docker, Migrations, Observability | Built, with gaps (see README limitations) |
+| 2 | Engine Core — Idempotency, PII, FX, Normalisers | Built, with gaps (see README limitations) |
+| 3 | Pipeline — Prefect Flows, Pandera Contracts, Kafka Consumer | Built, with gaps (see README limitations) |
+| 4 | Gold Layer — Matching Engine, Discrepancy Classifier | Built, with gaps (see README limitations) |
+| 5 | API + Alerting — Routes, Auth, Rate Limiting, Slack | Built, with gaps (see README limitations) |
+| 6 | Dashboard + Onboarding + Observability + Polish | Built, with gaps (see README limitations) |

@@ -1,367 +1,100 @@
-# Operations Guide
+# Operations guide
 
-> **Purpose**: Everything you need to understand, run, and demonstrate the MMR reconciliation engine.
-> This is the operational companion to the technical specifications in `/docs`.
+How to run, observe and troubleshoot the MMR engine locally. For how the system works and what it
+guarantees, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
----
+## First run
 
-## Dashboard Pages
-
-The executive dashboard (`http://localhost:3000`) has 7 screens. Each is designed for a specific audience and decision type.
-
-### 1. Executive Overview (`/`)
-
-**Audience**: Finance directors, CTOs, investors
-
-**What you see**:
-
-| Element | What It Means |
-|---------|--------------|
-| **Match Rate** | Percentage of transactions successfully matched across PSPs. Target: ≥99.5%. A drop signals webhook gaps or PSP settlement delays. |
-| **Open Exposure** | Total ₦ value of unmatched or disputed transactions. This is *money at risk* — the finance team needs to investigate. |
-| **Txns Today** | Total transactions processed across all connected PSPs in the current day. |
-| **Pending Issues** | Count of open discrepancies requiring human review. |
-| **Match Rate Trend** | 30-day area chart showing daily match rate. Look for sustained drops. |
-| **Exposure by PSP** | Bar chart showing which PSP has the most unresolved exposure. Helps prioritize investigation. |
-| **Recent Discrepancies** | Table of the most recent flagged issues, sorted by age. Clicking reveals details. |
-
----
-
-### 2. Discrepancy Management (`/discrepancies`)
-
-**Audience**: Reconciliation officers, finance teams
-
-**What you see**:
-
-| Element | What It Means |
-|---------|--------------|
-| **Severity Donut** | Visual breakdown of open issues by severity (critical → low). |
-| **Filter Bar** | Filter by severity, status, or PSP to focus on what matters. |
-| **Discrepancy Table** | Each row is a flagged transaction. Columns: type, PSP, amount, severity, age, status. |
-| **Resolve Button** | Mark an issue as resolved with a resolution note. This updates the audit trail. |
-
-**Discrepancy Types Explained**:
-
-| Type | What Happened | Action Required |
-|------|--------------|----------------|
-| `missing_settlement` | PSP received payment but hasn't settled to your bank account | Contact PSP support with the transaction reference |
-| `amount_mismatch` | Settlement amount differs from the original charge | Check for partial refunds, fees, or FX conversion errors |
-| `fx_variance` | Exchange rate shifted between initiation and settlement | Review if variance exceeds your configured threshold (default: 0.5%) |
-| `duplicate_credit` | Same transaction appears to have been credited twice | Verify with PSP — may need to return the duplicate |
-| `late_settlement` | Settlement arrived but past the expected SLA window | Monitor for patterns — may indicate PSP degradation |
-
-**Severity Levels**:
-
-| Level | Threshold | SLA |
-|-------|-----------|-----|
-| 🔴 Critical | Exposure > ₦5M or age < 6 hours | Investigate within 1 hour |
-| 🟠 High | Exposure > ₦1M or age < 48 hours | Investigate within 4 hours |
-| 🔵 Medium | Exposure > ₦100K | Investigate within 24 hours |
-| 🟢 Low | Below all thresholds | Review in next batch |
-
----
-
-### 3. PSP Health (`/psp-health`)
-
-**Audience**: Technical operations, DevOps
-
-**What you see**:
-
-| Element | What It Means |
-|---------|--------------|
-| **PSP Cards** | One card per connected PSP showing real-time status. |
-| **Status Badge** | 🟢 Connected (webhooks arriving normally), 🟡 Degraded (elevated gap rate or latency), 🔴 Disconnected (no webhooks received recently). |
-| **Webhook Gap Rate** | Percentage of expected webhooks that didn't arrive. > 1% triggers degraded status. |
-| **Avg Settlement Hours** | Mean time from payment initiation to bank settlement. SLA varies by PSP. |
-| **Settlement Timeline** | 24-hour area chart showing transaction volume per PSP. Reveals peak hours and outage windows. |
-
----
-
-### 4. CBN Reports (`/reports`)
-
-**Audience**: Compliance officers, regulatory teams
-
-**What you see**:
-
-| Element | What It Means |
-|---------|--------------|
-| **Calendar Grid** | Visual calendar showing report status per day. Green = submitted, yellow = reviewed, grey = generated, red = missing. |
-| **Report Detail** | Click a day to see the full CBN daily return: transaction count, volume, match rate, cross-border count, suspicious flags. |
-| **Download Buttons** | Export reports as CSV or JSON for submission to the Central Bank of Nigeria. |
-| **Recent Reports Table** | List of recent reports with status and key metrics. |
-
-**CBN Report Status Flow**: Generated → Reviewed → Submitted
-
----
-
-### 5. Settings (`/settings`)
-
-**Audience**: Administrators, DevOps
-
-**4 tabs**:
-
-| Tab | What It Does |
-|-----|-------------|
-| **PSP Connections** | View connected PSPs, webhook URLs, last verification time. |
-| **API Keys** | Generate and manage API keys for programmatic access. Keys are SHA-256 hashed — cannot be recovered. |
-| **Alert Configuration** | Set thresholds for Slack alerts: exposure limits, match rate minimums, settlement SLA windows. |
-| **Team** | Manage team members and their roles. |
-
----
-
-### 6. Onboarding Wizard (`/onboarding`)
-
-**Audience**: New users, first-time setup
-
-**4 steps**:
-1. **Business Profile** — Organization name, industry, monthly volume, email
-2. **Connect PSPs** — Enter API keys for Paystack, Flutterwave, M-Pesa. Keys are validated before connection.
-3. **Import History** — Backfill 7/14/30 days of historical transactions from connected PSPs
-4. **Ready** — Confirmation with summary stats and "Go to Dashboard" CTA
-
-**"Skip to Demo"** — Jump directly to the dashboard with synthetic data if you just want to explore.
-
----
-
-## Data Flow Architecture
-
-```
-How data gets from PSP to your dashboard:
-
-1. PSP EVENT          Payment happens on Paystack/Flutterwave/M-Pesa
-      │
-2. WEBHOOK            PSP sends HMAC-signed webhook to our API
-      │                (or: our polling client fetches via REST every 30min)
-      │
-3. INGESTION          FastAPI validates signature → publishes to Kafka topic
-      │
-4. BRONZE LAYER       Raw event stored as immutable Parquet in MinIO
-      │
-5. SILVER LAYER       Event normalised: PII masked, FX converted to NGN,
-      │                stored in PostgreSQL (canonical_transactions table)
-      │
-6. GOLD LAYER         Matching engine runs: exact match → probabilistic match
-      │                → discrepancies classified → CBN reports generated
-      │
-7. API                FastAPI serves matched pairs, discrepancies, exposure
-      │                from PostgreSQL to the dashboard
-      │
-8. DASHBOARD          React hooks fetch from API → display in charts/tables
-                       If API unreachable → falls back to demo-data.ts
-```
-
----
-
-## Demo Mode
-
-### When does demo mode activate?
-
-The dashboard **always works**, even without the backend. Here's the decision tree:
-
-```
-React hook (e.g. useKPISummary) runs:
-  ├── Try: fetch("/v1/reconciliation/summary")
-  │     ├── API responds 200 → use live data (green "Live" badge)
-  │     └── API responds error or timeout → fall through ↓
-  └── Catch: use demo-data.ts → show "Demo Mode" banner (amber)
-```
-
-### How to switch to live data
-
-1. Start the full stack: `make up && make migrate`
-2. Seed data: `make demo-data && make webhook-batch`
-3. The dashboard hooks will automatically detect the live API and switch
-
-### How demo data is generated
-
-**Client-side** (`dashboard/lib/demo-data.ts`):
-- Seeded pseudo-random generator (seed=42) for consistent values
-- 30 days of daily summaries with realistic Nigerian fintech patterns
-- 25 discrepancies with age-weighted severity
-- 3 PSP health records (Paystack, Flutterwave, M-Pesa)
-- 30 days of FX rate history (NGN/USD, NGN/GBP, NGN/KES)
-
-**Server-side** (`scripts/generate_demo_data.py`):
-- Generates ~3,000 events over 30 days as JSON files
-- Distribution: 70% matched pairs, 10% unmatched, 5% FX variance, 3% late, 2% duplicate, 5% cross-border
-- Output: `scripts/demo_data/day_YYYY-MM-DD.json`
-
----
-
-## Scripts Reference
-
-### `make demo` — Full Demo Setup
-Starts all services, runs migrations, generates 7 days of data, fires 30 webhooks.
 ```bash
-make demo
-# Dashboard: http://localhost:3000
-# API Docs:  http://localhost:8000/docs
-# Prefect:   http://localhost:4200
+cp .env.example .env     # replace every "replace-me"; PII_TOKENIZATION_KEY needs 32+ chars
+make doctor              # checks Docker, .env, ports, Python
+make up                  # builds images, runs migrations, starts everything, waits for health
+make api-key NAME=dashboard SCOPE=write
+#   → copy the printed key into DASHBOARD_API_KEY in .env, then:
+docker compose up -d dashboard
 ```
 
-### `make demo-investor` — Investor Demo
-Like `make demo` but with 30 days of data, 100 webhooks, and Grafana monitoring.
-```bash
-make demo-investor
-# Also includes:
-# Grafana:    http://localhost:3001 (admin/admin)
-# Prometheus: http://localhost:9090
-```
+Optional: `FX_PROVIDER_API_KEY` (only needed for non-NGN events) and `SLACK_WEBHOOK_URL` (alerts).
+Without an FX key, FX capture is skipped and non-NGN events are dead-lettered rather than converted with
+a guessed rate.
 
-### Webhook Simulator
-```bash
-# Single matched pair (Paystack + Flutterwave, same amount)
-make webhook
+## Demo data
 
-# Batch of 20 mixed scenarios
-make webhook-batch
+Everything the demo shows is synthetic.
 
-# Unmatched transaction (creates a discrepancy)
-make webhook-unmatched
+| Command | Effect |
+|---|---|
+| `make demo-full` | Start the stack, generate 30 days of events, replay them through the signed webhooks, wait for Silver to settle, run matching, and verify every layer holds data. Exits non-zero if a layer is empty. |
+| `make demo` | The same with 7 days of data. |
+| `make demo-reset` | Destroy all volumes, then `demo-full`. |
+| `make webhook` / `webhook-batch` / `webhook-unmatched` / `webhook-duplicate` | Fire individual signed webhook scenarios. |
+| `make matching` | Run the matching flow now (the scheduler runs it every 5 minutes anyway). |
 
-# Duplicate event (tests idempotency)
-make webhook-duplicate
-```
+The dashboard can also run with no backend: build it with `NEXT_PUBLIC_DEMO_MODE=true`. A banner that
+cannot be dismissed then marks every page as demo data. Without that flag the dashboard shows only
+real API data, or a real error.
 
-### Data Generator
-```bash
-# 30 days of synthetic data
-make demo-data
+## Dashboard
 
-# Quick 7-day dataset
-make demo-data-week
-```
+| Page | Shows | Backed by |
+|---|---|---|
+| Overview `/` | Today's KPIs, open exposure, the 30-day match-rate trend, exposure by PSP | `/summary`, `/trend`, `/psp-health`, `/exposure` |
+| Discrepancies | Filterable list. The detail panel has the evidence, the audit trail, and a resolve / false-positive form that requires a note. | `/discrepancies`, `/discrepancies/{id}/events`, `/discrepancies/{id}/resolve` |
+| PSP health | Events in the last 24 h, last event time, 7-day match rate and open exposure per PSP | `/psp-health`, `/exposure` |
+| Daily return (experimental) | Generated daily summaries, with CSV download | `/v1/reports/daily` |
+| System | Per-dependency readiness, including a degraded `503` body | `/health/ready` |
 
----
+The browser never talks to the API directly. It calls `/api/mmr/*` on the dashboard server, which adds
+`DASHBOARD_API_KEY` and forwards only an allow-list of routes. Anyone who can open the dashboard acts
+with that key's scope, so give it `write` only if dashboard users may resolve discrepancies.
 
-## API Authentication
+## Observability
 
-### Development Mode (default)
+| Signal | Where |
+|---|---|
+| Flow runs (matching, FX, gap detection, daily return) | Prefect UI, http://localhost:4200, and the `system_pipeline_runs` table |
+| Metrics | `make up-monitoring`, then Grafana (http://localhost:3001, password from `GRAFANA_PASSWORD`) and Prometheus (:9090) |
+| Alert rules | `infra/prometheus/alerts.yml`: signature failures, dead letters, process down, exposure, critical discrepancies, match rate, recovered gaps, stale FX, API latency |
+| Slack | Critical discrepancies and those at or above `ALERT_EXPOSURE_THRESHOLD_NGN`. Each attempt is recorded in `system_alert_events`. |
+| Raw events | Redpanda console (http://localhost:8080). Dead letters are on `dead.letter.queue`, with the original bytes base64-encoded and the error. |
+| Layer counts | `make status` |
 
-When `ENVIRONMENT=development` in `.env`, the API allows **unauthenticated access** to all endpoints. This enables the Next.js dashboard to connect without needing a pre-provisioned API key.
+## Routine operations
 
-The following paths are **always public** regardless of environment:
-- `/health`, `/health/ready`, `/metrics` — operational endpoints
-- `/v1/webhooks/*` — PSP webhook ingestion (uses HMAC validation instead)
-- `/v1/onboarding/*` — onboarding wizard (pre-auth by design)
-- `OPTIONS` requests — CORS preflight (never requires auth)
-
-### Production Mode
-
-Set `ENVIRONMENT=production` in `.env` to enforce API key authentication on all protected routes. Pass the key via `X-API-Key` header:
-```bash
-curl -H "X-API-Key: reck_your_key_here" http://localhost:8000/v1/reconciliation/summary
-```
-
-API keys are SHA-256 hashed at rest. See `API SPECIFICATION.md` §2.1 for full details.
-
----
+- **Issue or rotate an API key:** `make api-key NAME=<client> SCOPE=read|write|admin`. Keys are stored
+  hashed. To revoke, set `is_active = false` in `system_api_keys`.
+- **Replay a dead letter:** fix the cause, decode `raw_value_b64`, and re-publish it to its
+  `original_topic`. Idempotency makes replays safe.
+- **Backfill a PSP:** `docker compose exec scheduler python -c "import asyncio; from src.flows.polling_backfill_flow import polling_backfill_flow as f; print(asyncio.run(f('paystack', 30)))"`.
+- **Regenerate a daily return:** re-running `daily_return_flow(date)` replaces the row while its status is
+  `draft`. Approved or submitted returns are never overwritten.
+- **Roll back a migration:** `make migrate-down`. Every migration has a tested `downgrade()`.
 
 ## Troubleshooting
 
-### Dashboard shows "Demo Mode" when API is running
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A service exits at boot with a validation error | A required secret is missing or empty, or `PII_TOKENIZATION_KEY` is under 32 chars | Fix `.env`; Settings fails fast by design |
+| Every API call returns 401 | No key configured; `ENVIRONMENT` defaults to `production` | `make api-key`, set `DASHBOARD_API_KEY`; or for local-only work set `ENVIRONMENT=development` and `API_AUTH_DISABLED=true` |
+| Dashboard says "Engine unreachable" | `MMR_API_URL` wrong, or the API is not healthy | `docker compose ps api`; `curl localhost:8000/health/ready` |
+| System page shows `degraded` | One dependency is down; the body names which | `make logs-errors` |
+| Webhooks return 401 | The signing secret differs from `.env` | Check `PAYSTACK_SECRET_KEY` / `FLUTTERWAVE_SECRET_HASH` |
+| Webhooks return 503 | Redpanda or Postgres unavailable; nothing was recorded | Restore the dependency; PSPs retry automatically |
+| Events pile up on `dead.letter.queue` | Malformed payloads, or non-NGN events without an FX key | Inspect the `error` field on the message |
+| Non-NGN events dead-lettered | No FX snapshot within 2 h after the event | Set `FX_PROVIDER_API_KEY`, wait for a capture, replay |
+| Windows console prints garbled characters | Console code page is not UTF-8 | `$env:PYTHONIOENCODING="utf-8"` |
 
-**Cause**: CORS not configured, or API is on a different port.
+## Ports (all bound to 127.0.0.1)
 
-**Fix**: Check that `CORS_ORIGINS` in `.env` includes `http://localhost:3000` and restart the API.
+| Service | Port |
+|---|---|
+| Dashboard | 3000 |
+| API | 8000 |
+| Prefect UI | 4200 |
+| Redpanda console | 8080 |
+| MinIO API / console | 9000 / 9001 |
+| PostgreSQL | 5432 |
+| Redpanda (Kafka, external listener) | 19092 |
+| Grafana / Prometheus (monitoring overlay) | 3001 / 9090 |
 
-### `npm install` fails with 404
-
-**Cause**: A package in `package.json` doesn't exist.
-
-**Fix**: Remove the invalid package from `dependencies` and retry.
-
-### PostCSS function export error
-
-**Cause**: `postcss.config.mjs` exports a function instead of a plain object.
-
-**Fix**: Change `export default function()` to `export default {}`.
-
-### Docker build fails on migrations stage
-
-**Cause**: Missing `src/__init__.py` or `src/config.py` in the migrations COPY.
-
-**Fix**: Ensure both files are listed in the Dockerfile migrations stage.
-
-### Webhooks return 401
-
-**Cause**: HMAC signature doesn't match.
-
-**Fix**: Ensure `PAYSTACK_SECRET_KEY` in `.env` matches the key used to sign webhooks.
-
-### Windows Console/Terminal shows garbled characters or emojis fail to print
-
-**Cause**: Python on Windows uses the system's active code page (e.g. CP1252) by default, which does not support UTF-8 emojis or logs.
-
-**Fix**: Set the environment variable `PYTHONIOENCODING=utf-8` before running python scripts on Windows:
-```powershell
-$env:PYTHONIOENCODING="utf-8"
-python scripts/replay_demo_data.py
-```
-
-### Rate limiting is blocking webhook ingestion or replay simulator
-
-**Cause**: Webhook endpoints (e.g., `/v1/webhooks/*`) receive high-volume streams, which can exceed standard API client rate limits.
-
-**Fix**: The rate limiting middleware has been refined to explicitly bypass rate limiting for paths starting with `/v1/webhooks` so that ingestion pipelines are never throttled. Make sure the endpoints are accessed without authorization headers or using valid PSP signatures.
-
-### FX rate capture returns 404 errors
-
-**Cause**: `FX_PROVIDER_API_KEY` in `.env` is still set to the placeholder `your_exchangerate_api_key`.
-
-**Fix**: Get a free API key from [exchangerate-api.com](https://www.exchangerate-api.com/) (2,000 requests/month free tier). Update `.env`:
-```
-FX_PROVIDER_API_KEY=your_real_key_here
-```
-**Note**: This only affects cross-border (non-NGN) transactions. NGN-to-NGN reconciliation works without an FX key.
-
-### Prefect worker shows "Service exceeded error threshold"
-
-**Cause**: The Prefect worker started before the Prefect server was fully ready to accept connections.
-
-**Fix**: The `docker-compose.yml` now uses `service_healthy` (not `service_started`) for the `prefect_server` dependency, with a proper healthcheck. Restart with `make down && make up`.
-
-### MinIO init fails with "Object Lock cannot be enabled on existing buckets"
-
-**Cause**: Object Lock can only be enabled at bucket creation time. If the bucket already exists, the retention command fails.
-
-**Fix**: This is now handled — the `minio_init` service only creates the bucket without attempting to set retention on existing buckets. If you need Object Lock, delete the MinIO volume first: `docker volume rm reconciliation-engine_minio_data`.
-
----
-
-## Service Ports Reference
-
-| Service | Port | URL | Purpose |
-|---------|------|-----|---------|
-| Dashboard | 3000 | http://localhost:3000 | Executive dashboard (Next.js) |
-| API Gateway | 8000 | http://localhost:8000/docs | FastAPI + OpenAPI docs |
-| Grafana | 3001 | http://localhost:3001 | Monitoring dashboards (admin/admin) |
-| Prometheus | 9090 | http://localhost:9090 | Metrics collection |
-| Prefect | 4200 | http://localhost:4200 | Pipeline orchestration UI |
-| MinIO Console | 9001 | http://localhost:9001 | Object storage browser |
-| Redpanda Console | 8080 | http://localhost:8080 | Kafka topic browser |
-| PostgreSQL | 5432 | localhost:5432 | Direct DB access |
-| Redpanda (Kafka) | 19092 | localhost:19092 | Kafka protocol access |
-
----
-
-## Quick Reference: Make Commands
-
-| Command | What It Does |
-|---------|-------------|
-| `make up` | Start all core services |
-| `make down` | Stop everything |
-| `make migrate` | Run database migrations |
-| `make smoke` | Verify all services are healthy |
-| `make demo` | Full demo: services + data + webhooks |
-| `make demo-investor` | Investor demo: + Grafana + 30 days |
-| `make test` | Run full test suite |
-| `make test-all` | All tests + coverage report |
-| `make lint` | Ruff lint check |
-| `make format` | Ruff auto-format |
-| `make security-check` | Run security scanner |
-| `make dashboard` | Start dashboard dev server |
-| `make dashboard-install` | Install dashboard dependencies |
-| `make dashboard-build` | Production build |
-| `make clean` | Remove containers + volumes + caches |
-| `make help` | Show all available commands |
+Run `make help` for every target.

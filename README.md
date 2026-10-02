@@ -1,364 +1,178 @@
-# Cross-Border Mobile Money Reconciliation Engine
+# MMR — Money Movement Reconciliation Engine
 
-<p align="center">
-  <strong>Real-time payment operations reconciliation — know whether your PSP actually paid you</strong>
-</p>
+**PSP-to-ledger reconciliation reference implementation for Nigerian payments.**
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.12+-blue?style=flat-square&logo=python" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=nextdotjs" alt="Next.js 15">
-  <img src="https://img.shields.io/badge/FastAPI-0.111+-00C7B7?style=flat-square&logo=fastapi" alt="FastAPI">
-  <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql" alt="PostgreSQL 16">
-  <img src="https://img.shields.io/badge/Kafka-Redpanda-FF6B35?style=flat-square" alt="Redpanda">
-  <img src="https://img.shields.io/badge/Prefect-3.x-024DFD?style=flat-square" alt="Prefect 3">
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License">
-</p>
+> **Status: frozen reference implementation (v1.0.0).** Built and tested on synthetic data only;
+> not deployed to production. The follow-up product work is described in
+> [What I'd do next](#what-id-do-next).
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Tests-160_passing-brightgreen?style=flat-square" alt="Tests">
-  <img src="https://img.shields.io/badge/Demo-Synthetic_Data-8B5CF6?style=flat-square" alt="Synthetic Data">
-  <img src="https://img.shields.io/badge/Production-Live_PSP_Credentials-10B981?style=flat-square" alt="Live PSP">
-</p>
+MMR ingests Paystack and Flutterwave events, normalises them into one canonical ledger, matches
+money movements across providers, and raises the discrepancies a finance team would otherwise find
+by hand in a spreadsheet: settlements that never arrived, amounts that don't agree, FX gaps.
 
-> **Data Notice:** This demo environment uses synthetic transaction data calibrated to real Nigerian fintech patterns — multi-PSP settlement flows, WAT business day windows, NGN/USD/KES cross-border activity, and common discrepancy types. Production deployment connects to live Paystack and Flutterwave merchant accounts via their standard API credentials.
+It is a study in the boring parts of payments engineering that decide whether numbers can be trusted:
+idempotency, offset management, exact money arithmetic, one-to-one matching enforced by the database,
+append-only audit trails and least-privilege data access.
 
 ---
 
-## Problem
-
-Every Nigerian business processing payments across multiple PSPs — Paystack, Flutterwave, M-Pesa — has a reconciliation gap. Settlement is asynchronous. Reference IDs are not shared across providers. FX rates shift between initiation and settlement. Webhooks arrive out of order, duplicate, or not at all.
-
-The result: finance teams spend 30–40% of their time on manual reconciliation, with industry error rates of 3–8% of transaction volume. At scale, that's millions of naira in undetected discrepancies monthly.
-
-## Solution
-
-A production-grade reconciliation engine that:
-
-- **Ingests** webhook events and polls PSP APIs with HMAC-authenticated endpoints
-- **Normalises** disparate PSP formats into a canonical financial ledger (PII-masked, FX-normalised)
-- **Matches** transactions using a two-tier engine (exact primary + probabilistic secondary with trigram similarity)
-- **Detects** discrepancies — missing settlements, amount mismatches, FX variance, duplicate credits, late settlements
-- **Reports** CBN-compliant daily returns automatically
-- **Alerts** on financial exposure exceeding configurable thresholds
-
-**Target: 99.5% match rate · <10s end-to-end latency · exactly-once processing semantics**
-
----
-
-## Architecture
+## What it does
 
 ```
-                    ┌─────────────────┐
-                    │   PSP Webhooks  │     ┌──────────────┐
-                    │ Paystack | FLW  │     │  PSP REST    │
-                    │ M-Pesa          │     │  APIs (Poll) │
-                    └────────┬────────┘     └──────┬───────┘
-                             │ HMAC-validated       │ Scheduled
-                    ┌────────▼────────▼────────────┐
-                    │     FastAPI Gateway           │──── /health, /metrics
-                    │  (Ingestion + Reconciliation) │
-                    └────────┬─────────────────────┘
+ Paystack / Flutterwave                        PSP REST APIs
+ webhooks (signed)                             (gap detection, backfill)
+        │                                              │
+        ▼                                              ▼
+ ┌──────────────────────────────────────────────────────────┐
+ │ FastAPI  verify signature → register idempotency key +   │
+ │          publish to Redpanda in ONE unit (ack or rollback)│
+ └───────────────────────────┬──────────────────────────────┘
+                             ▼
+ Redpanda ── consumer_worker (per-message offset commits, DLQ)
                              │
-                    ┌────────▼────────┐
-                    │    Redpanda     │  Kafka-compatible
-                    │  (Event Queue)  │  acks=all, idempotent
-                    └────────┬────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-     ┌────────▼──────┐ ┌────▼────┐ ┌──────▼──────┐
-     │  Bronze Layer │ │   FX    │ │ Idempotency │
-     │ MinIO/Parquet │ │ Engine  │ │   Registry  │
-     │  (Immutable)  │ │         │ │             │
-     └───────────────┘ └─────────┘ └─────────────┘
-              │
-     ┌────────▼──────────────────────────────────┐
-     │            Silver Layer (PostgreSQL)       │
-     │  Canonical Ledger — PII masked, FX-normalised  │
-     └────────┬──────────────────────────────────┘
-              │
-     ┌────────▼──────────────────────────────────┐
-     │             Gold Layer (dbt + PG)          │
-     │  Matched Pairs │ Discrepancies │ CBN Reports │
-     └────────┬──────────────────────────────────┘
-              │
-     ┌────────▼──────┐  ┌──────────────┐  ┌──────────────┐
-     │   Prometheus  │  │   Grafana    │  │  Dashboard   │
-     │   + Alerting  │  │  Dashboards  │  │  (Next.js)   │
-     └───────────────┘  └──────────────┘  └──────────────┘
+          ┌──────────────────┴──────────────────┐
+          ▼                                     ▼
+  Bronze: MinIO Parquet                 Silver: PostgreSQL
+  every raw event, immutable            canonical transactions (NUMERIC money,
+                                        masked display fields, keyed name tokens)
+                                                │
+                     scheduler (every 5 min)    ▼
+          ┌─────────────────────────────────────────────────┐
+          │ Gold: matched pairs (one-to-one, DB-enforced),   │
+          │ discrepancies + append-only event history,       │
+          │ summary view, daily return (experimental)        │
+          └───────────┬───────────────────────┬─────────────┘
+                      ▼                       ▼
+        Next.js dashboard (via server-side    Prometheus / Grafana,
+        proxy; API key never in the browser)  Slack alerts
 ```
 
-**Medallion Architecture**: Bronze (raw immutable) → Silver (canonical ACID) → Gold (business logic)
+| Stage | What happens | Where |
+|---|---|---|
+| Ingest | HMAC-SHA512 (Paystack) / secret-hash (Flutterwave) check on the raw body; idempotency key registered in the same transaction that waits for the broker ack. A failed publish rolls back, so the PSP's retry is processed normally. | `src/api/v1/routes/webhooks.py`, `src/flows/ingestion_flow.py` |
+| Bronze | Every message is written to MinIO as Parquet, including event types the engine doesn't model. | `src/flows/transform_flow.py` |
+| Silver | Only modelled events (`charge.success`, `transfer.*`, successful Flutterwave charges, …) become canonical rows. Unknown events are never guessed into credits. Amounts are `NUMERIC(20,6)`; kobo conversion is exact. | `src/engine/normaliser.py` |
+| Match | Tier 1: same amount, complementary type, different PSP, closest in time. Tier 2: weighted evidence (amount, time, counterparty-name tokens, bank). Ties are left unmatched for review instead of guessed. | `src/engine/matching.py`, `src/flows/matching_flow.py` |
+| Discrepancies | Missing settlement (severity escalates with age), amount mismatch, FX variance (only when the rate move actually explains the gap). Each state change is written to an append-only event table. | `src/engine/discrepancy.py`, migration `015` |
+| Recover | Gap detection polls each PSP every 6 h and re-ingests anything a webhook missed; idempotency makes already-seen events free. | `src/flows/gap_detection_flow.py` |
 
----
+## Engineering decisions worth reading
 
-## Data Ingestion
+- **Effectively-once, not "exactly-once".** At-least-once delivery from Redpanda + idempotency keys +
+  a `UNIQUE` constraint on Silver = each event lands once. The idempotency key commits only after the
+  broker acknowledges the publish; consumer offsets are committed per message, only after the message
+  is processed or durably dead-lettered. A dead-letter publish failure stalls the partition rather
+  than skipping the event.
+- **One transaction, one match, enforced by Postgres.** `gold_matched_transactions` has its primary
+  key on `transaction_id`. Two matching runs racing for the same transaction cannot both win; the loser's
+  savepoint rolls back. Covered by a concurrency test against real Postgres.
+- **Masking is for display; tokens are for matching.** Masked names (`C***** O******`) collide for
+  different people, so matching on them is wrong. Names are stored as keyed HMAC tokens per word
+  (order- and honorific-insensitive). See [ADR 0001](docs/adr/0001-pii-tokenization.md).
+- **Ambiguity is a result, not an error.** When two candidates are equally good, the engine leaves
+  the transaction unmatched with the evidence attached. A wrong automatic match costs more than a
+  manual review.
+- **Least privilege that actually holds.** Migrations run as the owner; the API role can update only
+  resolution columns; nobody (including the owner) can `UPDATE`/`DELETE` audit rows, because a trigger
+  blocks it. All three are tested.
+- **Fail-closed configuration.** `ENVIRONMENT` defaults to `production`. Empty secrets are rejected at
+  boot. API auth can be disabled only in development.
 
-Three paths for real-world data — **all production-ready**:
+## Running it
 
-| Path | Mechanism | When Used |
-|------|-----------|-----------|
-| **Webhooks** (Push) | PSP pushes events to HMAC-authenticated endpoints | Primary: real-time transaction capture |
-| **Polling** (Pull) | Scheduled API calls to PSP REST endpoints | Fallback: missed webhooks, historical backfill |
-| **Gap Detection** | Cross-check received webhooks vs PSP API records | Safety net: runs every 6h, auto-backfills gaps |
-
-**Client onboarding flow:**
-```
-Client provides PSP API key → Polling backfill (30 days) →
-  Webhooks activated for real-time → Gap detection every 6h
-```
-
----
-
-## Tech Stack
-
-| Category | Technology | Why |
-|----------|-----------|-----|
-| **Dashboard** | Next.js 15 + React 19 + Tailwind v4 | Executive-grade dark mode UI |
-| **API** | FastAPI 0.111+ | Async-native, OpenAPI auto-gen, DI |
-| **Database** | PostgreSQL 16 | ACID, pg_trgm fuzzy matching, pgaudit |
-| **Queue** | Redpanda 23.x | Kafka-compatible, 10x lower RAM |
-| **Storage** | MinIO | S3-compatible, Object Lock for compliance |
-| **Orchestration** | Prefect 3 | Event-driven flows, retry logic |
-| **Transforms** | dbt Core 1.8 | Versioned SQL, lineage, built-in tests |
-| **Observability** | Prometheus + Grafana | 23 metrics, 9-panel Grafana dashboard |
-| **Logging** | structlog | JSON in prod, human-readable in dev |
-
----
-
-## Quick Start
+Requirements: Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/) recommended), Node 22.
 
 ```bash
-# 1. Clone and configure
-git clone https://github.com/emmanuelrichard01/mmr-engine.git
-cd mmr-engine
-cp .env.example .env    # Edit credentials as needed
-
-# 2. Start all services (PostgreSQL, Redpanda, MinIO, API, Prefect)
-make up
-
-# 3. Run database migrations
-make migrate
-
-# 4. Verify health
-make smoke
-
-# 5. Generate demo data + fire test webhooks (full demo)
-make demo
+cp .env.example .env            # fill in every "replace-me"
+make up                         # stack + automatic migrations
+make demo-full                  # 30 days of synthetic data → replay → match → verify
+make api-key NAME=dashboard SCOPE=write   # then put the key in DASHBOARD_API_KEY
 ```
 
-## Development Commands
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:3000 |
+| API docs (non-production only) | http://localhost:8000/docs |
+| Prefect UI (flow-run history) | http://localhost:4200 |
+| Redpanda console | http://localhost:8080 |
+| Grafana / Prometheus (`make up-monitoring`) | http://localhost:3001 / :9090 |
+
+All ports bind to `127.0.0.1`. See [docs/OPERATIONS.md](docs/OPERATIONS.md) for day-to-day operations.
+
+### Development
 
 ```bash
-make up                 # Start core services
-make up-monitoring      # Start with Prometheus + Grafana
-make down               # Stop all services
-make migrate            # Run Alembic migrations
-make test               # Full test suite
-make test-unit          # Unit tests only
-make lint               # Ruff lint check
-make format             # Ruff auto-format
-make typecheck          # Mypy strict type check
-make coverage           # Tests + HTML coverage report
-make security-check     # Run CI security scanner
-make test-all           # All tests + coverage
-make clean              # Remove containers, volumes, caches
-make help               # Show all available commands
+uv venv && uv pip install -e ".[test,dev]"
+make check        # ruff + format check + mypy --strict + security scan + tests
+make test-db      # database tests only (real PostgreSQL)
 ```
 
-## Demo & Simulation
+Database tests use `MMR_TEST_DATABASE_URL` when set (CI uses a `postgres:16` service) and otherwise
+start an embedded PostgreSQL via `pgserver`, so they run locally without Docker.
 
-```bash
-make demo               # Full demo: services + migrations + data + webhooks
-make demo-investor      # Investor demo: all services + Grafana + 30-day data
-make demo-data          # Generate 30 days of synthetic transaction data
-make demo-data-week     # Quick: 7 days of synthetic data
-make webhook            # Fire a single matched pair (Paystack + Flutterwave)
-make webhook-batch      # Fire 20 mixed webhook scenarios
-make webhook-unmatched  # Fire an unmatched event (creates discrepancy)
-make webhook-duplicate  # Fire a duplicate event (tests idempotency)
-```
+## By the numbers (verified against this repository)
 
-## Dashboard
+| | |
+|---|---|
+| Tests | 267, including 14 against real PostgreSQL (migrations round-trip, concurrency, triggers, grants) and property-based tests of the matching invariants |
+| Static checks | ruff (lint + format), `mypy --strict` with zero errors on `src/` |
+| Migrations | 16 (`000`–`015`), all reversible |
+| Tables | 15 + 1 materialized view |
+| HTTP endpoints | 14: 2 webhooks, 8 reconciliation, 2 reports, health, readiness (+ `/metrics`) |
+| PSP connectors | 2 (Paystack, Flutterwave) |
 
-```bash
-make dashboard-install  # Install Next.js dependencies
-make dashboard          # Start dashboard dev server (http://localhost:3000)
-make dashboard-build    # Production build
-```
+## Honest scope & limitations
 
-**7 screens + guided tour:** Executive Overview · Discrepancy Management · PSP Health · CBN Reports · Settings · Onboarding Wizard · Interactive Walkthrough Tour · Demo Mode (graceful fallback)
+- **No bank-statement leg.** MMR reconciles PSP records against PSP records. It does not prove that
+  cash reached a bank account; that needs bank statements or bank alerts, which are out of scope here.
+- **Synthetic data only.** Every number shown in the demo is generated. The engine has not processed
+  live merchant traffic.
+- **Single tenant.** One set of PSP credentials, no tenant isolation.
+- **Batch settlements are not solved.** Matching is one-to-one. Many-to-one settlement batches without
+  settlement IDs (a subset-sum problem) are not handled.
+- **Matching semantics are a model.** Pairing a credit on one PSP with a debit on another fits flows like
+  "collect on Paystack, pay out on Flutterwave". Other business flows need other pairing rules.
+- **Business-day calendar** skips weekends in WAT but does not model Nigerian public holidays.
+- **Daily return (CBN-style) is experimental.** It is a reporting prototype, not a compliance product,
+  and it does not follow an official CBN template. Merchants do not file CBN returns.
+- **Latency.** Ingestion is near-real-time, but that is an internal pipeline metric; PSP settlement
+  itself is typically T+1, so reconciliation outcomes are only as fresh as settlement.
+- **Rate limiting is per process** (in-memory buckets); a shared store would be needed for a global limit.
+- **pgaudit is not enabled** (it needs a custom Postgres image). The application-level audit trail is the
+  append-only `gold_discrepancy_events` table.
+- **Privacy.** Designed with the Nigeria Data Protection Act 2023 in mind (masking, tokenization, data
+  minimisation); this is an engineering control, not a compliance certification.
 
-## Operations
-
-```bash
-make status             # Container status + DB table counts
-make logs-errors        # Show only error logs from all services
-make rebuild            # Rebuild + restart (preserves data)
-make clean-data         # Remove generated demo data files
-make smoke              # Health check against running stack
-```
-
----
-
-## Project Structure
-
-```
-mmr-engine/
-├── src/
-│   ├── api/                    # FastAPI — routes, middleware, schemas
-│   ├── connectors/             # PSP adapters: webhooks + polling clients
-│   │   ├── paystack.py         #   HMAC-SHA512 webhook validation
-│   │   ├── flutterwave.py      #   Secret hash webhook validation
-│   │   ├── paystack_polling.py #   REST API polling + gap detection
-│   │   └── flutterwave_polling.py
-│   ├── contracts/              # Pandera schema contracts (Bronze, Silver)
-│   ├── engine/                 # Core computation
-│   │   ├── matching.py         #   Two-tier reconciliation matching
-│   │   ├── discrepancy.py      #   Anomaly classification (5 types)
-│   │   ├── fx.py               #   FX rate engine (PIT lookups)
-│   │   ├── pii.py              #   PII masking (NUBAN, BVN, names)
-│   │   ├── idempotency.py      #   Exactly-once processing
-│   │   └── normaliser.py       #   PSP → canonical transforms
-│   ├── flows/                  # Prefect orchestration
-│   │   ├── ingestion_flow.py   #   Webhook → Kafka → Bronze
-│   │   ├── transform_flow.py   #   Bronze → Silver (Pandera validated)
-│   │   ├── matching_flow.py    #   Silver → Gold reconciliation
-│   │   ├── polling_backfill_flow.py  # Historical data import
-│   │   ├── gap_detection_flow.py     # Webhook completeness check
-│   │   └── fx_capture_flow.py  #   Scheduled FX rate snapshots
-│   ├── storage/                # PostgreSQL, MinIO, Kafka clients
-│   ├── observability/          # Prometheus metrics + structlog
-│   └── config.py               # Pydantic Settings — all env vars typed
-├── alembic/versions/           # 15 database migrations (000-014)
-├── dbt_project/                # Silver → Gold SQL transforms
-├── dashboard/                  # Next.js 15 executive dashboard (30+ files)
-│   ├── app/(dashboard)/        #   6 dashboard pages
-│   ├── app/onboarding/         #   4-step onboarding wizard
-│   ├── components/             #   Sidebar, KPI cards, charts, stepper, walkthrough tour, page help
-│   └── lib/                    #   API client, data hooks, demo data, utilities
-├── tests/                      # 160+ tests across 9 suites
-│   ├── unit/                   #   Matching, discrepancy, PII, FX, CBN, connectors
-│   ├── contracts/              #   Bronze + Silver Pandera schemas
-│   └── integration/            #   API routes + pipeline flows
-├── scripts/                    # Tooling
-│   ├── security_check.py       #   CI prohibited pattern scanner
-│   ├── simulate_webhooks.py    #   Webhook scenario simulator
-│   └── generate_demo_data.py   #   Synthetic data generator
-├── infra/                      # Prometheus rules, Grafana dashboards
-├── docs/                       # 11 specification documents (530KB+)
-├── docker-compose.yml          # 11-service stack
-├── Dockerfile                  # Multi-stage build (Python)
-├── dashboard/Dockerfile        # Multi-stage build (Node.js)
-└── Makefile                    # Developer commands
-```
-
----
-
-## Database Schema
-
-**14 tables + 1 materialized view** across the Medallion layers:
-
-| Layer | Table | Purpose |
-|-------|-------|---------| 
-| System | `system_pipeline_runs` | Prefect flow run registry |
-| System | `system_api_keys` | API authentication (SHA-256 hashed) |
-| System | `system_alert_events` | Outbound alert audit trail |
-| Bronze | `bronze_ingestion_log` | Parquet file metadata registry |
-| Silver | `silver_canonical_transactions` | **Core normalised ledger** |
-| Silver | `silver_fx_rate_snapshots` | Point-in-time FX rate store |
-| Silver | `silver_idempotency_keys` | Deduplication registry |
-| Silver | `silver_psp_settlement_windows` | Per-PSP settlement SLA config |
-| Silver | `silver_transaction_audit_log` | Immutable state change history |
-| Gold | `gold_reconciliation_pairs` | Matched transaction pairs |
-| Gold | `gold_discrepancies` | Unmatched / anomalous events |
-| Gold | `gold_cbn_daily_returns` | CBN-format report records |
-| Gold | `gold_exposure_tracker` | Running open exposure by PSP |
-| Gold | `gold_reconciliation_summary` | Aggregated daily summary (mat. view) |
-
----
-
-## Test Suite
+## Repository map
 
 ```
-160+ tests passing across 9 suites:
-
-  contracts/test_bronze_schemas.py   ·····   9 tests  — Bronze structural validation
-  contracts/test_silver_schema.py    ····  27 tests  — Silver business rules + PII + FX
-  unit/test_matching.py              ····  24 tests  — Two-tier matching engine
-  unit/test_discrepancy.py           ····  22 tests  — Discrepancy classification
-  unit/test_pii_masking.py           ····  23 tests  — PII masking (NUBAN, BVN, names)
-  unit/test_connectors.py            ····  18 tests  — PSP webhook validation
-  unit/test_cbn_report.py            ····  11 tests  — CBN daily return generator
-  integration/test_api_routes.py     ····  20 tests  — API endpoint validation
-  integration/test_pipeline_flow.py  ····  12 tests  — Pipeline normalisation + matching
+src/
+  api/          FastAPI app, auth + rate-limit middleware, routes
+  connectors/   Paystack / Flutterwave signature checks and REST polling clients
+  engine/       pure logic: normaliser, matching, discrepancy, FX, PII, settlement windows
+  flows/        consumer worker, scheduler, matching / gap detection / backfill / daily return
+  storage/      Postgres sessions, Kafka producer/consumer, MinIO, pipeline-run bookkeeping
+alembic/        migrations 000–015
+dashboard/      Next.js operations console (server-side API proxy)
+infra/          Prometheus rules, Grafana dashboard, Redpanda console
+tests/          unit, contract, and real-Postgres integration tests
+docs/           ARCHITECTURE, OPERATIONS, ADRs; docs/archive = pre-build design specs
 ```
 
-## Security & Compliance
+## What I'd do next
 
-- **HMAC-SHA512** webhook signature validation (Paystack)
-- **SHA-256** hashed API keys — non-recoverable at rest
-- **PII masking** enforced at database level (`CHECK (has_pii_masked = TRUE)`)
-- **Role-based DB access** — 4 roles with least-privilege grants
-- **Immutable audit trail** — trigger-enforced, no UPDATE/DELETE permitted
-- **CI security scanner** — 9 rules checking for disabled TLS, hardcoded secrets, PII in logs
-- **NDPR & CBN** regulatory compliance built into the data model
+The honest gap in MMR is the first limitation above: PSP-to-PSP agreement is not proof of money
+received. The direction that closes it, and that I'm pursuing as a separate product, starts from
+verified ground truth instead:
 
----
-
-## Documentation
-
-12 specification documents (600KB+ of pre-engineering design + operational guides):
-
-| Document | Purpose |
-|----------|---------|
-| [PRD](docs/PRD.md) | Product requirements and user stories |
-| [Data Architecture](docs/DATA%20ARCHITECTURE.md) | Medallion layers, data flows, PII rules |
-| [ERD](docs/ERD.md) | Complete DDL — tables, constraints, triggers |
-| [Data Dictionary](docs/DATA%20DICTIONARY.md) | Field-level definitions and valid ranges |
-| [TDD](docs/TDD.md) | Full technical design and implementation roadmap |
-| [API Specification](docs/API%20SPECIFICATION.md) | All endpoints, schemas, error codes |
-| [Data Governance](docs/DATA%20GOVERNANCE%20%26%20SECURITY.md) | Threat model, NDPR compliance, access controls |
-| [Quality Assurance](docs/QUALITY%20ASSURANCE.md) | 10 correctness properties, testing strategy |
-| [CDA](docs/CDA.md) | Credential & Deployment Architecture — 3 deployment models, migration paths |
-| [Threat Assessment](docs/RELEVANCE%20AND%20THREAT%20ASSESSMENT.md) | Competitive landscape, differentiation |
-| [GTM Strategy](docs/GTM_STRATEGY.md) | Data acquisition, commercial positioning |
-| [Operations Guide](docs/OPERATIONS.md) | Dashboard pages, demo mode, scripts, troubleshooting |
-
----
-
-## Service Ports
-
-| Service | Port | URL |
-|---------|------|-----|
-| Dashboard | 3000 | http://localhost:3000 |
-| API Gateway | 8000 | http://localhost:8000/docs |
-| Grafana | 3001 | http://localhost:3001 |
-| Prometheus | 9090 | http://localhost:9090 |
-| Prefect | 4200 | http://localhost:4200 |
-| MinIO Console | 9001 | http://localhost:9001 |
-| Redpanda Console | 8080 | http://localhost:8080 |
-
----
-
-## Deployment Models
-
-See [CDA.md](docs/CDA.md) for the full credential and deployment architecture.
-
-| Model | Description | Target Client |
-|-------|-------------|---------------|
-| **Option A — Self-Hosted** | Client runs everything. Credentials never leave their infra. | Regulated entities, DevOps teams |
-| **Option B — Managed** | We run the system. AES-256-GCM encrypted credential vault. | SMEs, no-tech teams |
-| **Option C — Read-Only** | Credential scope discipline applied to both A and B. | All clients |
-
-> *"The reconciliation engine never needs write access to a PSP account. Ever."* — CDA §2
-
----
+1. **Bank leg first.** DKIM-verified bank alert emails and HMAC-verified PSP virtual-account webhooks
+   as the source of truth for "money arrived", rather than PSP-reported state.
+2. **Narrow wedge, real users.** Answer one question for businesses where the person confirming payment
+   isn't the account owner, such as cashiers, riders and front desks: *did this transfer actually land?*
+   Multi-tenant from day one (Postgres RLS), integer-kobo money, hash-chained audit log.
+3. **Then widen back toward MMR.** A batch-settlement solver, accounting sync and tax evidence, if the
+   wedge proves demand.
 
 ## License
 
 MIT
-
----
-
-*Built by Emmanuel Richard — designed for the Nigerian fintech ecosystem.*

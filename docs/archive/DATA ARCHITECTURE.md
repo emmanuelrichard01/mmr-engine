@@ -1,6 +1,8 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 # DATA ARCHITECTURE & PIPELINE BLUEPRINT
 
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 
 **Version:** 1.0
 **Author:** Emmanuel Richard
@@ -32,8 +34,8 @@ A transaction record doesn't get updated silently. Every change in status — fr
 │                           EXTERNAL EVENT SOURCES                            │
 │                                                                             │
 │   Paystack Webhook ──┐                                                      │
-│   Flutterwave Webhook─┼──► FastAPI Ingestion Gateway                       │
-│   M-Pesa Daraja ─────┘         │                                           │
+│   Flutterwave Webhook─┴──► FastAPI Ingestion Gateway                       │
+│                                │                                           │
 │                                │  (validate HMAC, reject invalid)          │
 │   PSP Polling Fallback ────────┘                                           │
 │   (every 15 min via Prefect)                                               │
@@ -45,10 +47,9 @@ A transaction record doesn't get updated silently. Every change in status — fr
 │                                                                             │
 │   Kafka Topic: raw.paystack.events                                          │
 │   Kafka Topic: raw.flutterwave.events                                       │
-│   Kafka Topic: raw.mpesa.events          (Phase 2)                          │
 │   Kafka Topic: raw.fx.rates              (continuous)                       │
 │                                                                             │
-│   Consumer Group: bronze-writer (exactly-once via idempotency key check)   │
+│   Consumer Group: bronze-writer (effectively-once via idempotency keys)    │
 └────────────────────────────────┬────────────────────────────────────────────┘
                                  │
                                  ▼
@@ -238,7 +239,7 @@ This table is the metadata registry for all Bronze files. It does not store raw 
 ```sql
 CREATE TABLE bronze_ingestion_log (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    psp_name            VARCHAR(50) NOT NULL,           -- paystack | flutterwave | mpesa
+    psp_name            VARCHAR(50) NOT NULL,           -- paystack | flutterwave
     source_type         VARCHAR(20) NOT NULL,           -- webhook | polling
     kafka_topic         VARCHAR(100) NOT NULL,
     kafka_partition     INTEGER NOT NULL,
@@ -312,7 +313,7 @@ BRONZE_FX_RATE_SCHEMA = pa.schema([
     pa.field("_source_provider",    pa.string()),      # exchangerate-api | manual | etc.
     
     pa.field("base_currency",       pa.string()),      # NGN
-    pa.field("quote_currency",      pa.string()),      # USD | GBP | EUR | KES
+    pa.field("quote_currency",      pa.string()),      # USD | GBP | EUR
     pa.field("rate",                pa.float64()),
     pa.field("bid",                 pa.float64()),
     pa.field("ask",                 pa.float64()),
@@ -329,7 +330,7 @@ BRONZE_FX_RATE_SCHEMA = pa.schema([
 This is the most important table in the system. Every PSP's transaction data normalises into this single schema. The matching engine operates on this table only — it never touches Bronze.
 
 ```sql
-CREATE TYPE psp_name_enum AS ENUM ('paystack', 'flutterwave', 'mpesa', 'moniepoint');
+CREATE TYPE psp_name_enum AS ENUM ('paystack', 'flutterwave', 'moniepoint');
 CREATE TYPE settlement_status_enum AS ENUM ('pending', 'settled', 'failed', 'reversed', 'disputed');
 CREATE TYPE transaction_type_enum AS ENUM ('credit', 'debit', 'reversal');
 
@@ -356,7 +357,7 @@ CREATE TABLE silver_canonical_transactions (
     
     -- Amounts (always store original currency AND NGN equivalent)
     amount_raw                  NUMERIC(20, 6) NOT NULL CHECK (amount_raw >= 0),
-    currency_raw                CHAR(3) NOT NULL,       -- ISO 4217: NGN, USD, GBP, KES
+    currency_raw                CHAR(3) NOT NULL,       -- ISO 4217: NGN, USD, GBP
     amount_ngn                  NUMERIC(20, 6) NOT NULL CHECK (amount_ngn >= 0),
     fx_rate_snapshot_id         UUID REFERENCES silver_fx_rate_snapshots(id),
     fx_rate_applied             NUMERIC(20, 8),         -- NULL if currency_raw = NGN
@@ -484,8 +485,7 @@ INSERT INTO silver_psp_settlement_windows
     (psp_name, transaction_type, settlement_lag_hours, settlement_days, cutoff_time_wat, effective_from)
 VALUES
     ('paystack',     'credit', 24.0, 'business', '16:00', '2024-01-01'),
-    ('flutterwave',  'credit', 24.0, 'business', '17:00', '2024-01-01'),
-    ('mpesa',        'credit', 72.0, 'business', NULL,    '2024-01-01');
+    ('flutterwave',  'credit', 24.0, 'business', '17:00', '2024-01-01');
 ```
 
 ### 5.5 Transaction Audit Log
@@ -715,7 +715,7 @@ CREATE TABLE gold_cbn_daily_returns (
 
 ### 7.1 Idempotency — The Exact Mechanism
 
-This is how exactly-once semantics are achieved without distributed transactions:
+This is how effectively-once semantics (idempotency keys + UNIQUE constraints + at-least-once delivery from Redpanda) are achieved without distributed transactions:
 
 ```
 Webhook arrives at FastAPI
@@ -916,7 +916,6 @@ Observability       Prometheus+Grafana  Operational metrics, pipeline health
 | OQ-002 | DuckDB vs Postgres for Silver/Gold | PostgreSQL for operational, DuckDB for analytics — see §3.3 |
 | OQ-003 | FX rate provider | ExchangeRate-API (MVP), CBN rate endpoint (Phase 2 research) |
 | OQ-004 | CBN report format | Modelled in §6.4, exact schema confirmed via CBN public returns |
-| OQ-005 | M-Pesa transaction type handling | Separate Bronze schema, normalised in Silver via PSP-specific mapper |
 | OQ-006 | Prefect vs Dagster | Prefect 3 — see §3.4 |
 
 ---

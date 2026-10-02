@@ -1,9 +1,11 @@
+> **Archived design document — not authoritative.** Written as a pre-build specification; parts describe components that were never built. See [docs/archive/README.md](README.md) and the top-level README for what exists.
+
 Both documents are written to the same standard as everything before them. No generic templates. Every decision traces back to a specific requirement, a real threat, or an actual failure mode this system will face.
 
 ---
 
 # DATA GOVERNANCE & SECURITY POLICY
-## Cross-Border Mobile Money Reconciliation Engine
+## MMR — Money Movement Reconciliation Engine
 **Version:** 1.0
 **Author:** Emmanuel Richard
 **Status:** Active — Pre-Engineering Foundation
@@ -18,7 +20,7 @@ This document defines how sensitive financial data is classified, protected, ret
 
 Three regulatory regimes govern this system directly:
 
-**NDPR (Nigeria Data Protection Regulation):** Enacted 2019, operationalised through NDPR Implementation Framework 2020 and the Nigeria Data Protection Act 2023. Applies to all personal data of Nigerian residents processed by any system, regardless of where the system operates.
+**Nigeria Data Protection Act 2023 (NDPA):** Enacted 2023, superseding the earlier 2019 data protection regulation and its 2020 implementation framework. Applies to all personal data of Nigerian residents processed by any system, regardless of where the system operates.
 
 **CBN Regulatory Framework:** CBN Guidelines on Electronic Banking, Risk-Based Cybersecurity Framework for Banks and Payment Service Providers (2021), and AML/CFT regulations. Applies because this system processes financial transaction data that falls under CBN oversight for licensed entities using it.
 
@@ -63,7 +65,7 @@ bronze_ingestion_log (Parquet)      raw PSP payload (data field)    CRIT    Cont
                                                                             names, BVN references as received
                                                                             from PSP. Never leaves Bronze.
 
-silver_canonical_transactions       sender_account_masked           SENS    Masked NUBAN. Still PII under NDPR —
+silver_canonical_transactions       sender_account_masked           SENS    Masked NUBAN. Still PII under NDPA 2023 —
                                                                             partial identifiers remain personal data.
                                     beneficiary_account_masked      SENS    Same as above.
                                     beneficiary_name_masked         SENS    Masked name. Still PII.
@@ -130,7 +132,7 @@ An attacker captures a valid, signed Paystack webhook and replays it hours or da
 **T-005 — Insider Data Exfiltration**
 A developer or operator with database access exports transaction data for personal use or sale.
 
-*Impact:* NDPR breach. Regulatory enforcement action. Financial and reputational damage.
+*Impact:* NDPA 2023 breach. Regulatory enforcement action. Financial and reputational damage.
 *Likelihood:* Non-trivial. Insider threat is the most common cause of PII breaches in financial services.
 *Control:* Role-based database access (three roles, principle of least privilege). PII exists only in Bronze Parquet on MinIO with separate access controls. `pgaudit` logs all data access. Access reviews quarterly. Detailed in §5.
 
@@ -214,7 +216,7 @@ def generate_api_key() -> tuple[str, str, str]:
     Generate a new API key.
     Returns: (raw_key, key_hash, key_prefix)
     
-    raw_key:    Shown to user exactly once. Not stored anywhere.
+    raw_key:    Shown to user only once. Not stored anywhere.
     key_hash:   SHA-256(raw_key). Stored in system_api_keys.
     key_prefix: First 8 chars. Stored for identification.
     """
@@ -503,28 +505,28 @@ system_alert_events         Write             Read          None        Full
 
 ---
 
-## 6. NDPR Compliance Framework
+## 6. NDPA 2023 Data Protection Framework
 
 ### 6.1 Lawful Basis for Processing
 
-Under NDPR, processing personal data requires a lawful basis. This system's lawful bases:
+Under NDPA 2023, processing personal data requires a lawful basis. This system's lawful bases:
 
 ```
 Processing Activity                 Lawful Basis            Article Reference
 ─────────────────────────────────── ─────────────────────── ──────────────────
-Storing raw PSP webhook payloads    Legitimate Interest     NDPR 2.2(a)
+Storing raw PSP webhook payloads    Legitimate Interest     NDPA 2023 (lawful basis)
   containing beneficiary names,     (financial reconcili-
   account numbers                   ation — contractual
                                     necessity for clients)
 
-Masked beneficiary data in Silver   Legitimate Interest     NDPR 2.2(a)
+Masked beneficiary data in Silver   Legitimate Interest     NDPA 2023 (lawful basis)
                                     + Performance of
                                     Contract
 
-Transaction audit trail             Legal Obligation        NDPR 2.2(b)
+Transaction audit trail             Legal Obligation        NDPA 2023 (lawful basis)
   (CBN record-keeping requirement)  (CBN regulations)
 
-CBN daily return reports            Legal Obligation        NDPR 2.2(b)
+CBN daily return reports            Legal Obligation        NDPA 2023 (lawful basis)
 ```
 
 ### 6.2 Data Processing Register
@@ -550,9 +552,9 @@ IP addresses    Security/rate limiting       90 days     Application     Not per
 
 ### 6.3 Data Subject Rights — Implementation
 
-Under NDPR Article 3.1, individuals have rights to access, correct, and delete their personal data. Implementation for this system:
+Under NDPA 2023, individuals have rights to access, correct, and delete their personal data. Implementation for this system:
 
-**Right of Access (Article 3.1.1):**
+**Right of Access:**
 ```python
 # src/api/v1/routes/data_subject.py (Phase 2 endpoint)
 
@@ -570,7 +572,7 @@ async def get_data_subject_records(
     ...
 ```
 
-**Right to Erasure (Article 3.1.6):**
+**Right to Erasure:**
 Financial data subject to CBN 7-year retention cannot be erased during that period — the legal obligation lawful basis overrides the erasure right. After 7 years, automated anonymisation runs (detailed in §6.4).
 
 **Right to Correction:** Data sourced from PSPs cannot be corrected unilaterally — corrections require PSP confirmation. The system logs correction requests and their outcomes.
@@ -676,8 +678,8 @@ async def monthly_retention_flow():
 ```
 Severity    Definition                              Response Time   Escalation
 ─────────── ─────────────────────────────────────── ─────────────── ──────────────────
-P1 CRITICAL Active data breach. PII confirmed       Immediate       NDPR regulator
-            exposed. System actively compromised.   (< 1 hour)      (72-hour NDPR
+P1 CRITICAL Active data breach. PII confirmed       Immediate       NDPC (NDPA 2023)
+            exposed. System actively compromised.   (< 1 hour)      (72-hour NDPA
                                                                     notification SLA)
                                                                     CBN notification
 
@@ -693,9 +695,9 @@ P4 LOW      Policy violation. Developer accessed     < 72 hours     Engineering 
             leakage suspected.
 ```
 
-### 7.2 NDPR Breach Notification Procedure
+### 7.2 NDPA 2023 Breach Notification Procedure
 
-Under NDPR Article 2.11, personal data breaches must be reported to NITDA within 72 hours of becoming aware. Delayed notification must be justified.
+Under the NDPA 2023, personal data breaches must be reported to the Nigeria Data Protection Commission (NDPC) within the statutory window (verify the current requirement and NDPC guidance before relying on this).
 
 ```
 Hour 0:    Breach detected or suspected
@@ -706,15 +708,15 @@ Hour 4:    Preliminary assessment complete
            Affected data categories identified
            Number of affected data subjects estimated
 Hour 24:   Legal counsel notified
-           NITDA notification drafted
-Hour 48:   NITDA notification submitted
-           (via NITDA Data Breach Portal)
-Hour 72:   NITDA deadline
+           NDPC notification drafted
+Hour 48:   NDPC notification submitted
+           (via NDPC breach reporting channel)
+Hour 72:   NDPC deadline
 Hour 72+:  Affected data subjects notified
            (required if breach creates high risk to their rights)
 ```
 
-**Notification content requirements (NDPR Article 2.11):**
+**Notification content requirements (NDPA 2023; verify against current NDPC guidance):**
 - Nature of the breach
 - Categories and approximate number of data subjects concerned
 - Categories and approximate number of personal data records concerned
