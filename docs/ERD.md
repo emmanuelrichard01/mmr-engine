@@ -1029,7 +1029,10 @@ CREATE TABLE gold_reconciliation_pairs (
         CHECK (
             status != 'resolved'
             OR (resolved_at IS NOT NULL AND resolved_by IS NOT NULL AND resolution_note IS NOT NULL)
-        )
+        ),
+    -- A transaction pair must be unique to support ON CONFLICT specification
+    CONSTRAINT uq_pairs_transaction_a_b
+        UNIQUE (transaction_a_id, transaction_b_id)
 );
 
 CREATE INDEX idx_gold_pairs_status

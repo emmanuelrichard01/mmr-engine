@@ -70,77 +70,82 @@ class ConsumerWorker:
         )
 
         try:
-            for message in consumer.consume(timeout=1.0):
-                if not self._running:
-                    break
+            while self._running:
+                # Consume messages in batches
+                messages = list(consumer.consume(timeout=1.0, max_messages=10))
+                if not messages:
+                    await asyncio.sleep(0.5)
+                    continue
 
-                try:
-                    # Parse Kafka message value
-                    kafka_message = json.loads(message.value().decode("utf-8"))
+                for message in messages:
+                    if not self._running:
+                        break
 
-                    log.info(
-                        "consumer_worker.message_received",
-                        psp_name=kafka_message.get("psp_name"),
-                        event_type=kafka_message.get("event_type"),
-                        topic=message.topic(),
-                        partition=message.partition(),
-                        offset=message.offset(),
-                    )
-
-                    # Enrich with Kafka metadata
-                    kafka_message["kafka_topic"] = message.topic()
-                    kafka_message["kafka_partition"] = message.partition()
-                    kafka_message["kafka_offset"] = message.offset()
-                    kafka_message["source_type"] = "webhook"
-
-                    # Trigger the Bronze → Silver flow
-                    result = asyncio.get_event_loop().run_until_complete(
-                        bronze_to_silver_flow(kafka_message)
-                    )
-
-                    log.info(
-                        "consumer_worker.flow_completed",
-                        silver_id=result.get("silver_transaction_id"),
-                        psp_name=kafka_message.get("psp_name"),
-                    )
-
-                    # Commit offset only after successful processing
-                    consumer.commit(message)
-
-                except Exception as e:
-                    log.error(
-                        "consumer_worker.flow_failed",
-                        error=str(e),
-                        topic=message.topic(),
-                        offset=message.offset(),
-                    )
-
-                    # Send to dead letter topic for manual investigation
                     try:
-                        dead_letter_payload = {
-                            "original_topic": message.topic(),
-                            "original_offset": message.offset(),
-                            "original_partition": message.partition(),
-                            "error": str(e),
-                            "raw_value": message.value().decode("utf-8"),
-                        }
-                        dead_letter_producer.publish(
-                            topic=self._dead_letter_topic,
-                            payload=dead_letter_payload,
-                            key=f"dlq:{message.topic()}:{message.offset()}",
-                        )
+                        # message is a ConsumedMessage object from kafka_consumer.py
+                        kafka_message = message.value
+
                         log.info(
-                            "consumer_worker.sent_to_dead_letter",
-                            topic=self._dead_letter_topic,
-                        )
-                    except Exception as dlq_error:
-                        log.error(
-                            "consumer_worker.dead_letter_failed",
-                            error=str(dlq_error),
+                            "consumer_worker.message_received",
+                            psp_name=kafka_message.get("psp_name"),
+                            event_type=kafka_message.get("event_type"),
+                            topic=message.topic,
+                            partition=message.partition,
+                            offset=message.offset,
                         )
 
-                    # Commit the offset even on failure (message is in DLQ now)
-                    consumer.commit(message)
+                        # Enrich with Kafka metadata
+                        kafka_message["kafka_topic"] = message.topic
+                        kafka_message["kafka_partition"] = message.partition
+                        kafka_message["kafka_offset"] = message.offset
+                        kafka_message["source_type"] = "webhook"
+
+                        # Trigger the Bronze → Silver flow
+                        result = await bronze_to_silver_flow(kafka_message)
+
+                        log.info(
+                            "consumer_worker.flow_completed",
+                            silver_id=result.get("silver_transaction_id"),
+                            psp_name=kafka_message.get("psp_name"),
+                        )
+
+                        # Commit offset only after successful processing
+                        consumer.commit()
+
+                    except Exception as e:
+                        log.error(
+                            "consumer_worker.flow_failed",
+                            error=str(e),
+                            topic=message.topic,
+                            offset=message.offset,
+                        )
+
+                        # Send to dead letter topic for manual investigation
+                        try:
+                            dead_letter_payload = {
+                                "original_topic": message.topic,
+                                "original_offset": message.offset,
+                                "original_partition": message.partition,
+                                "error": str(e),
+                                "raw_value": json.dumps(message.value),
+                            }
+                            dead_letter_producer.publish(
+                                topic=self._dead_letter_topic,
+                                payload=dead_letter_payload,
+                                key=f"dlq:{message.topic}:{message.offset}",
+                            )
+                            log.info(
+                                "consumer_worker.sent_to_dead_letter",
+                                topic=self._dead_letter_topic,
+                            )
+                        except Exception as dlq_error:
+                            log.error(
+                                "consumer_worker.dead_letter_failed",
+                                error=str(dlq_error),
+                            )
+
+                        # Commit the offset even on failure (message is in DLQ now)
+                        consumer.commit()
 
         finally:
             consumer.close()

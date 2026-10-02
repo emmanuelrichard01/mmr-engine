@@ -8,12 +8,16 @@ import {
   TrendingUp,
   ArrowRight,
   Clock,
+  RefreshCw,
+  CheckCircle2,
+  ChevronRight,
 } from "lucide-react";
 
 import { KPICard } from "@/components/kpi-card";
 import { AreaChartWrapper } from "@/components/charts/area-chart";
-import { BarChartWrapper } from "@/components/charts/bar-chart";
 import { DemoBanner, LiveIndicator } from "@/components/demo-banner";
+import { EmptyState } from "@/components/empty-state";
+import { PSPLogo } from "@/components/psp-logos";
 import {
   useKPISummary,
   useDailySummaries,
@@ -21,127 +25,172 @@ import {
   usePSPHealth,
   useAPIStatus,
 } from "@/lib/hooks";
-import { formatCurrency, formatPercent, timeAgo } from "@/lib/utils";
+import { formatCurrency, formatPercent, cn } from "@/lib/utils";
+import { useState, useMemo } from "react";
 
-// ── Severity color helper ────────────────────────────────────────────
+// ── Status badge lookup ───────────────────────────────────────────────
 
-const severityColors: Record<string, string> = {
-  critical: "#f43f5e",
-  high: "#f59e0b",
-  medium: "#6366f1",
-  low: "#10b981",
+const STATUS_BADGE: Record<string, string> = {
+  open:          "badge badge-critical",
+  investigating: "badge badge-high",
+  escalated:     "badge badge-medium",
+  resolved:      "badge badge-low",
 };
 
-const severityClasses: Record<string, string> = {
-  critical: "badge badge-critical",
-  high: "badge badge-high",
-  medium: "badge badge-medium",
-  low: "badge badge-low",
+const SEVERITY_DOT: Record<string, string> = {
+  critical: "var(--color-danger-500)",
+  high:     "var(--color-warning-500)",
+  medium:   "var(--color-primary-500)",
+  low:      "var(--color-success-500)",
 };
 
-const statusClasses: Record<string, string> = {
-  open: "text-danger-400",
-  investigating: "text-warning-400",
-  escalated: "text-primary-400",
-  resolved: "text-success-400",
-};
-
-const pspIcons: Record<string, string> = {
-  paystack: "🟢",
-  flutterwave: "🟡",
-  mpesa: "🔵",
-};
-
-// ── Loading skeleton ─────────────────────────────────────────────────
+// ── Loading skeleton ──────────────────────────────────────────────────
 
 function KPISkeleton() {
   return (
-    <div className="card border-l-4 border-l-surface-300 animate-pulse">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 space-y-3">
-          <div className="h-4 w-24 bg-surface-200 rounded" />
-          <div className="h-8 w-32 bg-surface-200 rounded" />
-          <div className="h-3 w-20 bg-surface-200 rounded" />
+    <div className="card animate-shimmer flex flex-col gap-3" style={{ minHeight: 110 }}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-md bg-[var(--color-surface-200)]" />
+          <div className="h-2.5 w-20 bg-[var(--color-surface-200)] rounded" />
         </div>
-        <div className="w-24 h-14 bg-surface-200 rounded" />
+        <div className="w-14 h-6 bg-[var(--color-surface-200)] rounded" />
       </div>
+      <div className="h-6 w-28 bg-[var(--color-surface-200)] rounded mt-1" />
+      <div className="h-2 w-16 bg-[var(--color-surface-200)] rounded" />
     </div>
   );
 }
 
-// ── Page ─────────────────────────────────────────────────────────────
+// ── Toast ─────────────────────────────────────────────────────────────
+
+function Toast({ message, onClose }: { message: string; onClose: () => void }) {
+  return (
+    <div className="toast">
+      <CheckCircle2 className="w-4 h-4 text-[var(--color-success-400)] shrink-0" />
+      <span>{message}</span>
+      <button
+        onClick={onClose}
+        className="ml-auto text-[var(--color-surface-400)] hover:text-[var(--color-surface-200)] transition-colors leading-none"
+        aria-label="Dismiss"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────
 
 export default function ExecutiveOverviewPage() {
   const apiStatus = useAPIStatus();
-  const { data: kpi, isLoading: kpiLoading, isUsingDemoData } = useKPISummary();
-  const { data: summaries } = useDailySummaries();
-  const { data: discrepancies } = useDiscrepancies();
-  const { data: pspHealth } = usePSPHealth();
+  const { data: kpi, isLoading: kpiLoading, isUsingDemoData, refetch: refetchKPI } = useKPISummary();
+  const { data: summaries, refetch: refetchSummaries } = useDailySummaries();
+  const { data: discrepancies, refetch: refetchDiscrepancies } = useDiscrepancies();
+  const { data: pspHealth, refetch: refetchPSP } = usePSPHealth();
+  const [toast, setToast] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
-  // Top 5 most urgent discrepancies (by severity, then recency)
+  // Top 5 most urgent discrepancies
   const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-  const urgentDiscrepancies = [...(discrepancies || [])]
-    .sort(
-      (a, b) =>
-        (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4) ||
-        b.ageHours - a.ageHours
-    )
-    .slice(0, 5);
+  const urgentDiscrepancies = useMemo(
+    () =>
+      [...(discrepancies || [])]
+        .sort(
+          (a, b) =>
+            (severityOrder[a.severity] ?? 4) - (severityOrder[b.severity] ?? 4) ||
+            b.ageHours - a.ageHours
+        )
+        .slice(0, 5),
+    [discrepancies]
+  );
 
-  // Chart data
-  const matchRateData = (summaries || []).map((s) => ({
-    date: s.date,
-    rate: s.matchRate,
-  }));
+  // Match rate chart data
+  const matchRateData = useMemo(
+    () => (summaries || []).map((s) => ({ date: s.date, rate: s.matchRate })),
+    [summaries]
+  );
 
-  // Exposure bar data from PSP health
-  const pspColors: Record<string, string> = {
-    paystack: "#6366f1",
-    flutterwave: "#10b981",
-    mpesa: "#f59e0b",
+  // Week-over-week trend
+  const recentAvg = useMemo(() => {
+    const r = matchRateData.slice(-7).map((d) => d.rate);
+    return r.length ? r.reduce((a, b) => a + b, 0) / r.length : 0;
+  }, [matchRateData]);
+  const olderAvg = useMemo(() => {
+    const r = matchRateData.slice(-14, -7).map((d) => d.rate);
+    return r.length ? r.reduce((a, b) => a + b, 0) / r.length : 0;
+  }, [matchRateData]);
+  const trendDelta = recentAvg - olderAvg;
+
+  // PSP exposure
+  const pspList = pspHealth || [];
+  const maxUnmatchedRate = Math.max(...pspList.map((p) => 100 - p.matchRate), 1);
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      // Refetch all data sources
+      refetchKPI();
+      refetchSummaries();
+      refetchDiscrepancies();
+      refetchPSP();
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/health/ready`
+      );
+      setToast(res.ok ? "All data refreshed ✓" : "Data refreshed — pipeline reports degraded status");
+    } catch {
+      setToast("Data refreshed from cache — live API unreachable");
+    }
+    setSyncing(false);
+    setTimeout(() => setToast(null), 4000);
   };
-  const exposureBarData = (pspHealth || []).map((p) => ({
-    name: p.displayName,
-    value: p.volumeToday * (1 - p.matchRate / 100), // Estimated unmatched exposure
-    color: pspColors[p.name] || "#6366f1",
-  }));
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
-      {/* ── Demo Banner ── */}
-      {isUsingDemoData && <DemoBanner />}
+    <div className="space-y-6 pb-8">
 
-      {/* ── Page Header ── */}
-      <div
-        className="animate-fade-in"
-        style={{ animationDelay: "0s" }}
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <div>
-            <h1 className="text-2xl font-bold text-surface-900 tracking-tight">
-              Executive Overview
-            </h1>
-            <p className="text-sm text-surface-500 mt-0.5">
-              Real-time reconciliation health across all payment processors
-            </p>
-          </div>
-          <div className="flex items-center gap-2 text-xs text-surface-500">
+      {/* ── Demo Banner — only when on demo data ── */}
+      {isUsingDemoData && (
+        <div className="animate-fade-in">
+          <DemoBanner />
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════
+          ROW 0: Page header — compact, data-forward
+          ═════════════════════════════════════════════════════════ */}
+      <div className="flex items-center justify-between gap-4 animate-fade-in">
+        <div>
+          <h1 className="text-display">Overview</h1>
+          <p className="text-[12px] text-[var(--color-surface-400)] font-medium mt-0.5">
+            {new Date().toLocaleDateString("en-NG", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Live / demo indicator */}
+          <div className="flex items-center gap-2 h-8 px-3 rounded-md border border-[var(--color-surface-200)] bg-[var(--color-surface-50)] text-[12px]">
             <LiveIndicator isConnected={apiStatus} />
-            <span className="text-surface-400">|</span>
-            <Clock className="w-3.5 h-3.5" />
-            <span>
-              {new Date().toLocaleDateString("en-NG", {
-                day: "numeric",
-                month: "short",
-                year: "numeric",
-              })}
-            </span>
           </div>
+
+          {/* Sync */}
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="btn btn-primary flex items-center gap-1.5"
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", syncing && "animate-spin")} strokeWidth={2.5} />
+            <span>{syncing ? "Syncing..." : "Sync"}</span>
+          </button>
         </div>
       </div>
 
-      {/* ═══════════════ ROW 1: KPI Cards ═══════════════ */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      {/* ══════════════════════════════════════════════════════════
+          ROW 1: KPI Cards — immediate business answers
+          ═════════════════════════════════════════════════════════ */}
+      <div
+        data-tour="kpi-cards"
+        className="grid grid-cols-2 xl:grid-cols-4 gap-4"
+      >
         {kpiLoading || !kpi ? (
           <>
             <KPISkeleton />
@@ -157,7 +206,7 @@ export default function ExecutiveOverviewPage() {
               delta={kpi.matchRate.delta}
               trend={kpi.matchRate.trend}
               color="emerald"
-              icon={<Activity className="w-4 h-4" />}
+              icon={<Activity strokeWidth={2.5} />}
               index={0}
             />
             <KPICard
@@ -167,8 +216,9 @@ export default function ExecutiveOverviewPage() {
               deltaLabel="vs yesterday"
               trend={kpi.openExposure.trend}
               color="rose"
-              icon={<ShieldAlert className="w-4 h-4" />}
+              icon={<ShieldAlert strokeWidth={2.5} />}
               index={1}
+              invertDelta
             />
             <KPICard
               title="Pending Issues"
@@ -176,8 +226,9 @@ export default function ExecutiveOverviewPage() {
               delta={kpi.pendingIssues.delta}
               trend={kpi.pendingIssues.trend}
               color="amber"
-              icon={<AlertCircle className="w-4 h-4" />}
+              icon={<AlertCircle strokeWidth={2.5} />}
               index={2}
+              invertDelta
             />
             <KPICard
               title="Txns Today"
@@ -185,41 +236,48 @@ export default function ExecutiveOverviewPage() {
               delta={kpi.txnsToday.delta}
               trend={kpi.txnsToday.trend}
               color="indigo"
-              icon={<Zap className="w-4 h-4" />}
+              icon={<Zap strokeWidth={2.5} />}
               index={3}
             />
           </>
         )}
       </div>
 
-      {/* ═══════════════ ROW 2: Charts ═══════════════ */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Match Rate Trend */}
+      {/* ══════════════════════════════════════════════════════════
+          ROW 2: Charts
+          ═════════════════════════════════════════════════════════ */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+        {/* Match Rate Trend — 2/3 width */}
         <div
-          className="card animate-fade-in"
-          style={{ animationDelay: "0.5s" }}
+          data-tour="match-trend"
+          className="card lg:col-span-2 animate-fade-in"
+          style={{ animationDelay: "0.18s" }}
         >
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-sm font-semibold text-surface-800">
+              <h2 className="text-[14px] font-semibold text-[var(--color-surface-900)] tracking-tight">
                 Match Rate Trend
               </h2>
-              <p className="text-xs text-surface-500 mt-0.5">
-                Last 30 days — daily reconciliation accuracy
+              <p className="text-[11px] text-[var(--color-surface-400)] font-medium mt-0.5">
+                30-day reconciliation accuracy
               </p>
             </div>
-            <div className="flex items-center gap-1.5 text-xs">
-              <TrendingUp className="w-3.5 h-3.5 text-success-400" />
-              <span className="text-success-400 font-medium">
-                +1.2% this month
-              </span>
+            <div className={cn(
+              "flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded border",
+              trendDelta >= 0
+                ? "text-[var(--color-success-600)] bg-[var(--color-success-50)] border-[var(--color-success-100)]"
+                : "text-[var(--color-danger-600)] bg-[var(--color-danger-50)] border-[var(--color-danger-100)]"
+            )}>
+              <TrendingUp className="w-3 h-3" strokeWidth={2.5} />
+              {trendDelta >= 0 ? "+" : ""}{trendDelta.toFixed(1)}% week
             </div>
           </div>
           <AreaChartWrapper
             data={matchRateData}
             dataKey="rate"
             xKey="date"
-            color="#818cf8"
+            color="var(--color-primary-500)"
             gradientId="matchrate-gradient"
             yDomain={[90, 100]}
             tooltipFormatter={(v) => formatPercent(v)}
@@ -227,173 +285,193 @@ export default function ExecutiveOverviewPage() {
               const date = new Date(d);
               return `${date.getDate()}/${date.getMonth() + 1}`;
             }}
-            height={260}
+            height={240}
           />
         </div>
 
-        {/* Exposure by PSP */}
+        {/* Exposure by PSP — 1/3 width */}
         <div
+          data-tour="exposure-chart"
           className="card animate-fade-in"
-          style={{ animationDelay: "0.6s" }}
+          style={{ animationDelay: "0.24s" }}
         >
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-sm font-semibold text-surface-800">
-                Exposure by PSP
-              </h2>
-              <p className="text-xs text-surface-500 mt-0.5">
-                Outstanding unreconciled amounts per processor
-              </p>
-            </div>
-            <div className="flex items-center gap-3 text-[10px] text-surface-500">
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-[#6366f1] inline-block" />
-                Paystack
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-[#10b981] inline-block" />
-                Flutterwave
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-[#f59e0b] inline-block" />
-                M-Pesa
-              </span>
-            </div>
+          <div className="mb-5">
+            <h2 className="text-[14px] font-semibold text-[var(--color-surface-900)] tracking-tight">
+              Exposure by PSP
+            </h2>
+            <p className="text-[11px] text-[var(--color-surface-400)] font-medium mt-0.5">
+              Unmatched volume per processor
+            </p>
           </div>
-          <BarChartWrapper
-            data={exposureBarData}
-            tooltipFormatter={(v) => formatCurrency(v)}
-            labelFormatter={(v) => formatCurrency(v)}
-            height={260}
-          />
+
+          <div className="space-y-5">
+            {pspList.length === 0 ? (
+              <EmptyState
+                title="No PSP data"
+                description="Connect payment processors to see exposure breakdown."
+              />
+            ) : (
+              pspList.map((p) => {
+                const unmatchedRate = 100 - p.matchRate;
+                const unmatchedVolume = p.volumeToday * (unmatchedRate / 100);
+                const pct = (unmatchedRate / maxUnmatchedRate) * 100;
+                return (
+                  <div key={p.name} className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <PSPLogo name={p.name} iconOnly className="w-4 h-4 shrink-0" />
+                        <span className="text-[12px] font-semibold text-[var(--color-surface-800)] capitalize">
+                          {p.displayName}
+                        </span>
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-[12px] font-bold text-[var(--color-surface-900)] tabular-nums">
+                          {formatCurrency(unmatchedVolume, true)}
+                        </span>
+                        <span className="text-[11px] text-[var(--color-surface-400)] tabular-nums w-8 text-right">
+                          {unmatchedRate.toFixed(1)}%
+                        </span>
+                      </div>
+                    </div>
+                    {/* Progress bar — PSP-specific color */}
+                    <div className="h-[5px] bg-[var(--color-surface-100)] rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-700 ease-out"
+                        style={{
+                          width: `${Math.min(100, Math.max(3, pct))}%`,
+                          background:
+                            p.name === 'paystack' ? 'var(--color-primary-500)' :
+                            p.name === 'flutterwave' ? 'var(--color-success-500)' :
+                            p.name === 'mpesa' ? 'var(--color-warning-500)' :
+                            'var(--color-surface-500)',
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
 
-      {/* ═══════════════ ROW 3: Recent Discrepancies ═══════════════ */}
+      {/* ══════════════════════════════════════════════════════════
+          ROW 3: Discrepancies — "What needs attention?"
+          Full width — Quick Actions panel removed (dead code).
+          ═════════════════════════════════════════════════════════ */}
       <div
-        className="card animate-fade-in"
-        style={{ animationDelay: "0.7s" }}
+        data-tour="recent-discrepancies"
+        className="card animate-fade-in overflow-hidden"
+        style={{ animationDelay: "0.3s" }}
       >
-        <div className="flex items-center justify-between mb-4">
+        {/* Section header */}
+        <div className="flex items-center justify-between pb-4 border-b border-[var(--color-surface-100)]">
           <div>
-            <h2 className="text-sm font-semibold text-surface-800">
-              Recent Discrepancies
+            <h2 className="text-[14px] font-semibold text-[var(--color-surface-900)] tracking-tight">
+              Needs Attention
             </h2>
-            <p className="text-xs text-surface-500 mt-0.5">
-              Top 5 most urgent items requiring attention
+            <p className="text-[11px] text-[var(--color-surface-400)] font-medium mt-0.5">
+              Top 5 open discrepancies by severity and age
             </p>
           </div>
           <a
             href="/discrepancies"
-            className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 font-medium transition-colors group"
+            className="flex items-center gap-1 text-[12px] font-semibold text-[var(--color-surface-500)] hover:text-[var(--color-surface-900)] transition-colors group"
           >
             View all
-            <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+            <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" strokeWidth={2.5} />
           </a>
         </div>
 
-        {/* Table */}
-        <div className="overflow-x-auto -mx-6 px-6">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-surface-200">
-                <th className="text-left text-xs font-medium text-surface-500 pb-3 pr-4">
-                  Severity
-                </th>
-                <th className="text-left text-xs font-medium text-surface-500 pb-3 pr-4">
-                  Type
-                </th>
-                <th className="text-left text-xs font-medium text-surface-500 pb-3 pr-4">
-                  PSP
-                </th>
-                <th className="text-right text-xs font-medium text-surface-500 pb-3 pr-4">
-                  Amount
-                </th>
-                <th className="text-left text-xs font-medium text-surface-500 pb-3 pr-4">
-                  Age
-                </th>
-                <th className="text-left text-xs font-medium text-surface-500 pb-3">
-                  Status
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {urgentDiscrepancies.map((d, i) => (
-                <tr
-                  key={d.id}
-                  className="border-b border-surface-200/50 last:border-0 hover:bg-surface-100/50 transition-colors cursor-pointer group animate-fade-in"
-                  style={{ animationDelay: `${0.8 + i * 0.05}s` }}
-                >
-                  {/* Severity */}
-                  <td className="py-3 pr-4">
-                    <span className={severityClasses[d.severity]}>
-                      <span
-                        className="w-1.5 h-1.5 rounded-full inline-block"
-                        style={{ backgroundColor: severityColors[d.severity] }}
-                      />
-                      {d.severity.charAt(0).toUpperCase() +
-                        d.severity.slice(1)}
-                    </span>
-                  </td>
-
-                  {/* Type */}
-                  <td className="py-3 pr-4">
-                    <span className="text-surface-700 font-medium">
-                      {d.type
-                        .split("_")
-                        .map(
-                          (w) =>
-                            w.charAt(0).toUpperCase() + w.slice(1)
-                        )
-                        .join(" ")}
-                    </span>
-                    <p className="text-xs text-surface-500 mt-0.5 max-w-[220px] truncate">
-                      {d.reference}
-                    </p>
-                  </td>
-
-                  {/* PSP */}
-                  <td className="py-3 pr-4">
-                    <span className="flex items-center gap-1.5">
-                      <span className="text-sm">{pspIcons[d.psp] || "⚡"}</span>
-                      <span className="text-surface-600 text-xs font-medium capitalize">
-                        {d.psp}
-                      </span>
-                    </span>
-                  </td>
-
-                  {/* Amount */}
-                  <td className="py-3 pr-4 text-right font-semibold text-surface-800 tabular-nums">
-                    {formatCurrency(d.amount)}
-                  </td>
-
-                  {/* Age */}
-                  <td className="py-3 pr-4">
-                    <span className="text-xs text-surface-500">
-                      {d.ageHours < 1
-                        ? "just now"
-                        : d.ageHours < 24
-                        ? `${Math.round(d.ageHours)}h ago`
-                        : `${Math.round(d.ageHours / 24)}d ago`}
-                    </span>
-                  </td>
-
-                  {/* Status */}
-                  <td className="py-3">
-                    <span
-                      className={`text-xs font-medium capitalize ${
-                        statusClasses[d.status] || "text-surface-500"
-                      }`}
-                    >
-                      {d.status}
-                    </span>
-                  </td>
+        {urgentDiscrepancies.length === 0 ? (
+          <div className="py-10">
+            <EmptyState
+              title="All clear"
+              description="No open discrepancies — all transactions are matched."
+            />
+          </div>
+        ) : (
+          <div className="overflow-x-auto -mx-5">
+            <table className="w-full text-left whitespace-nowrap">
+              <thead>
+                <tr className="border-b border-[var(--color-surface-100)]">
+                  <th className="table-header pl-5">Discrepancy</th>
+                  <th className="table-header">PSP</th>
+                  <th className="table-header text-right">Amount</th>
+                  <th className="table-header">Status</th>
+                  <th className="table-header">Age</th>
+                  <th className="table-header pr-5"></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {urgentDiscrepancies.map((d) => (
+                  <tr
+                    key={d.id}
+                    className="border-b border-[var(--color-surface-100)] last:border-0 hover:bg-[var(--color-surface-50)] transition-colors cursor-pointer group"
+                    onClick={() => (window.location.href = `/discrepancies?id=${d.id}`)}
+                  >
+                    {/* Severity dot + type */}
+                    <td className="py-3 pl-5 pr-4">
+                      <div className="flex items-center gap-2.5">
+                        {/* Severity dot */}
+                        <span
+                          className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ background: SEVERITY_DOT[d.severity] ?? "var(--color-surface-300)" }}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-[13px] font-semibold text-[var(--color-surface-900)] group-hover:text-[var(--color-primary-600)] transition-colors truncate">
+                            {d.type.split("_").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}
+                          </p>
+                          <p className="text-mono text-[var(--color-surface-400)] mt-0.5 truncate">
+                            {d.reference}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    {/* PSP */}
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-1.5">
+                        <PSPLogo name={d.psp} iconOnly className="w-4 h-4 shrink-0" />
+                        <span className="text-[12px] font-medium text-[var(--color-surface-600)] capitalize">
+                          {d.psp}
+                        </span>
+                      </div>
+                    </td>
+                    {/* Amount */}
+                    <td className="py-3 px-4 text-right">
+                      <span className="text-[13px] font-bold text-[var(--color-surface-900)] tabular-nums">
+                        {formatCurrency(d.amount)}
+                      </span>
+                    </td>
+                    {/* Status badge */}
+                    <td className="py-3 px-4">
+                      <span className={STATUS_BADGE[d.status] ?? "badge badge-neutral"}>
+                        {d.status.charAt(0).toUpperCase() + d.status.slice(1)}
+                      </span>
+                    </td>
+                    {/* Age */}
+                    <td className="py-3 pl-4 pr-5">
+                      <div className="flex items-center gap-1 text-[11px] text-[var(--color-surface-400)] font-medium">
+                        <Clock className="w-3 h-3" strokeWidth={2} />
+                        {d.ageHours < 24
+                          ? `${d.ageHours}h`
+                          : `${Math.floor(d.ageHours / 24)}d`}
+                      </div>
+                    </td>
+                    {/* Arrow */}
+                    <td className="py-3 pr-5 w-4">
+                      <ChevronRight className="w-4 h-4 text-[var(--color-surface-300)] group-hover:text-[var(--color-surface-500)] transition-colors" strokeWidth={2} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
+
+      {/* Toast */}
+      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
     </div>
   );
 }

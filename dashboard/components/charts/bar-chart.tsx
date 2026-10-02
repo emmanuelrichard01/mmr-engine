@@ -45,9 +45,9 @@ function CustomTooltip({
   const entry = payload[0];
 
   return (
-    <div className="bg-surface-100 border border-surface-300 rounded-lg px-3 py-2 shadow-xl">
-      <p className="text-xs text-surface-500 mb-0.5">{entry.payload.name}</p>
-      <p className="text-sm font-semibold text-surface-900">
+    <div className="bg-[var(--color-surface-0)] border border-[var(--color-surface-200)] rounded-lg px-3 py-2.5 shadow-lg">
+      <p className="text-xs text-[var(--color-surface-500)] mb-0.5">{entry.payload.name}</p>
+      <p className="text-sm font-semibold text-[var(--color-surface-800)]">
         {formatter ? formatter(entry.value) : entry.value.toLocaleString()}
       </p>
     </div>
@@ -69,7 +69,7 @@ function renderCustomLabel(props: {
     <text
       x={x + width + 8}
       y={y + height / 2}
-      fill="#c4c7d8"
+      fill="var(--color-surface-400)"
       fontSize={12}
       fontWeight={600}
       dominantBaseline="central"
@@ -101,7 +101,7 @@ export function BarChartWrapper({
       >
         <CartesianGrid
           strokeDasharray="3 3"
-          stroke="rgba(30,32,48,0.6)"
+          stroke="var(--color-surface-200)"
           horizontal={false}
         />
 
@@ -110,7 +110,7 @@ export function BarChartWrapper({
           type="category"
           tickLine={false}
           axisLine={false}
-          tick={{ fontSize: 13, fill: "#c4c7d8", fontWeight: 500 }}
+          tick={{ fontSize: 13, fill: "var(--color-surface-500)", fontWeight: 500 }}
           width={100}
         />
 
@@ -118,7 +118,7 @@ export function BarChartWrapper({
           type="number"
           tickLine={false}
           axisLine={false}
-          tick={{ fontSize: 11, fill: "#6b7094" }}
+          tick={{ fontSize: 11, fill: "var(--color-surface-400)" }}
           tickFormatter={(v: number) =>
             tooltipFormatter ? tooltipFormatter(v) : v.toLocaleString()
           }
@@ -126,7 +126,7 @@ export function BarChartWrapper({
 
         <Tooltip
           content={<CustomTooltip formatter={tooltipFormatter} />}
-          cursor={{ fill: "rgba(99,102,241,0.06)" }}
+          cursor={{ fill: "var(--color-primary-500)", fillOpacity: 0.05 }}
         />
 
         <Bar

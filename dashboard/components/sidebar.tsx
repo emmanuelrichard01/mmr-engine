@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -11,41 +10,26 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  User,
+  LogOut,
+  TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// ─── Navigation Items ─────────────────────────────────────────────────────────
+// ── Navigation config ─────────────────────────────────────────────────
 
-const navItems = [
-  {
-    label: 'Overview',
-    href: '/',
-    icon: LayoutDashboard,
-  },
-  {
-    label: 'Discrepancies',
-    href: '/discrepancies',
-    icon: AlertTriangle,
-  },
-  {
-    label: 'PSP Health',
-    href: '/psp-health',
-    icon: Activity,
-  },
-  {
-    label: 'Reports',
-    href: '/reports',
-    icon: FileBarChart,
-  },
-  {
-    label: 'Settings',
-    href: '/settings',
-    icon: Settings,
-  },
-];
+const NAV_ITEMS = [
+  { label: 'Overview',      href: '/',              icon: LayoutDashboard },
+  { label: 'Discrepancies', href: '/discrepancies',  icon: AlertTriangle   },
+  { label: 'PSP Health',    href: '/psp-health',     icon: Activity        },
+  { label: 'Reports',       href: '/reports',        icon: FileBarChart    },
+] as const;
 
-// ─── Sidebar Component ───────────────────────────────────────────────────────
+const WORKSPACE_ITEMS = [
+  { label: 'Investor Demo', href: '/investor', icon: TrendingUp, accent: true },
+  { label: 'Settings',      href: '/settings', icon: Settings               },
+] as const;
+
+// ── Sidebar ───────────────────────────────────────────────────────────
 
 interface SidebarProps {
   collapsed: boolean;
@@ -55,112 +39,139 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
   const pathname = usePathname();
+  const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href);
 
   return (
     <aside
       className={cn(
-        'fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-surface-200 bg-surface-50 transition-all duration-300 ease-in-out',
-        collapsed ? 'w-[72px]' : 'w-[260px]',
+        'flex h-screen flex-col shrink-0 select-none',
+        'border-r border-[var(--color-surface-200)]',
+        'bg-[var(--color-surface-0)]',
+        'transition-[width] duration-250 ease-out',
+        collapsed ? 'w-[60px]' : 'w-[232px]',
         className
       )}
     >
-      {/* ── Logo ─────────────────────────────────────────────────────────── */}
-      <div className="flex h-16 items-center border-b border-surface-200 px-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-500 font-bold text-white text-sm">
-            M
+      {/* ── Brand ────────────────────────────────────────────────── */}
+      <div className={cn(
+        'flex h-[56px] shrink-0 items-center border-b border-[var(--color-surface-200)]',
+        collapsed ? 'px-3 justify-center' : 'px-4'
+      )}>
+        <Link
+          href="/"
+          className="flex items-center gap-2.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary-500)] p-1 -ml-1"
+        >
+          {/* Logo mark */}
+          <div className="w-7 h-7 rounded-md bg-[var(--color-surface-900)] flex items-center justify-center shrink-0">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M2 13V3L5.5 8.5L8 5L10.5 8.5L14 3V13"
+                stroke="white"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
           </div>
-          <span
-            className={cn(
-              'whitespace-nowrap font-bold text-lg text-surface-900 transition-opacity duration-200',
-              collapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
-            )}
-          >
-            MMR
-          </span>
-        </div>
+
+          {!collapsed && (
+            <div className="min-w-0 animate-fade-in">
+              <p className="text-[13px] font-bold text-[var(--color-surface-900)] tracking-tight leading-none">
+                MMR Engine
+              </p>
+              <p className="text-[11px] font-medium text-[var(--color-surface-400)] leading-none mt-1 truncate">
+                by Emmanuel Richard
+              </p>
+            </div>
+          )}
+        </Link>
       </div>
 
-      {/* ── Navigation ───────────────────────────────────────────────────── */}
-      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
-        {navItems.map((item) => {
-          const isActive =
-            pathname === item.href ||
-            (item.href !== '/' && pathname.startsWith(item.href));
-          const Icon = item.icon;
+      {/* ── Primary Navigation ────────────────────────────────────── */}
+      <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0.5">
 
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                'group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-150',
-                isActive
-                  ? 'bg-primary-500/10 text-primary-400'
-                  : 'text-surface-600 hover:bg-surface-200/60 hover:text-surface-800'
-              )}
-            >
-              {/* Active indicator bar */}
-              {isActive && (
-                <div className="absolute -left-3 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-r-full bg-primary-500" />
-              )}
-
-              <Icon
-                className={cn(
-                  'h-5 w-5 shrink-0 transition-colors',
-                  isActive
-                    ? 'text-primary-400'
-                    : 'text-surface-500 group-hover:text-surface-700'
-                )}
+        {/* Main items */}
+        <div className="space-y-0.5">
+          {NAV_ITEMS.map((item) => {
+            const active = isActive(item.href);
+            return (
+              <NavItem
+                key={item.href}
+                item={item}
+                active={active}
+                collapsed={collapsed}
               />
-
-              <span
-                className={cn(
-                  'whitespace-nowrap transition-opacity duration-200',
-                  collapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
-                )}
-              >
-                {item.label}
-              </span>
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* ── Bottom Section ───────────────────────────────────────────────── */}
-      <div className="border-t border-surface-200 p-3">
-        {/* User Avatar */}
-        <div className="mb-3 flex items-center gap-3 rounded-lg px-3 py-2">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-300 text-surface-700">
-            <User className="h-4 w-4" />
-          </div>
-          <div
-            className={cn(
-              'min-w-0 transition-opacity duration-200',
-              collapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
-            )}
-          >
-            <p className="truncate text-sm font-medium text-surface-800">
-              Demo User
-            </p>
-            <p className="truncate text-xs text-surface-500">
-              demo@mmr.finance
-            </p>
-          </div>
+            );
+          })}
         </div>
 
-        {/* Collapse Toggle */}
+        {/* Section divider */}
+        <div className={cn(
+          'pt-4 mt-3 border-t border-[var(--color-surface-200)]',
+          'space-y-0.5'
+        )}>
+          {!collapsed && (
+            <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--color-surface-300)]">
+              Workspace
+            </p>
+          )}
+          {WORKSPACE_ITEMS.map((item) => {
+            const active = isActive(item.href);
+            return (
+              <NavItem
+                key={item.href}
+                item={item}
+                active={active}
+                collapsed={collapsed}
+              />
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* ── Bottom ───────────────────────────────────────────────── */}
+      <div className="shrink-0 border-t border-[var(--color-surface-200)] p-2 space-y-0.5">
+        {/* Logout */}
+        <button
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('mmr-onboarded');
+              window.location.href = '/onboarding';
+            }
+          }}
+          className={cn(
+            'flex w-full items-center gap-2.5 rounded-md px-3 py-2',
+            'text-[12px] font-medium text-[var(--color-surface-500)]',
+            'hover:bg-[var(--color-danger-50)] hover:text-[var(--color-danger-600)]',
+            'transition-colors duration-150 outline-none',
+            'focus-visible:ring-2 focus-visible:ring-[var(--color-danger-500)]',
+            collapsed && 'justify-center px-0'
+          )}
+          title={collapsed ? 'Logout' : undefined}
+        >
+          <LogOut className="h-[14px] w-[14px] shrink-0" strokeWidth={2} />
+          {!collapsed && <span>Logout</span>}
+        </button>
+
+        {/* Collapse toggle */}
         <button
           onClick={onToggle}
-          className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-surface-500 transition-colors hover:bg-surface-200/60 hover:text-surface-700"
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md px-3 py-2',
+            'text-[12px] font-medium text-[var(--color-surface-400)]',
+            'hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-700)]',
+            'transition-colors duration-150 outline-none',
+            'focus-visible:ring-2 focus-visible:ring-[var(--color-primary-500)]',
+            collapsed ? 'justify-center px-0' : 'justify-between'
+          )}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? (
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-[14px] w-[14px]" strokeWidth={2} />
           ) : (
             <>
-              <ChevronLeft className="h-4 w-4" />
-              <span className="text-xs font-medium">Collapse</span>
+              <span>Collapse</span>
+              <ChevronLeft className="h-[14px] w-[14px]" strokeWidth={2} />
             </>
           )}
         </button>
@@ -169,7 +180,72 @@ export function Sidebar({ collapsed, onToggle, className }: SidebarProps) {
   );
 }
 
-// ─── Mobile Sidebar Overlay ──────────────────────────────────────────────────
+// ── NavItem ───────────────────────────────────────────────────────────
+
+interface NavItemProps {
+  item: { label: string; href: string; icon: typeof LayoutDashboard; accent?: boolean };
+  active: boolean;
+  collapsed: boolean;
+}
+
+function NavItem({ item, active, collapsed }: NavItemProps) {
+  return (
+    <Link
+      href={item.href}
+      title={collapsed ? item.label : undefined}
+      className={cn(
+        'relative flex items-center gap-2.5 rounded-md px-3 py-[7px]',
+        'text-[13px] font-medium transition-colors duration-150 outline-none',
+        'focus-visible:ring-2 focus-visible:ring-[var(--color-primary-500)]',
+        // Active state — clear visual weight, works in dark + light mode
+        active
+          ? 'bg-[var(--color-surface-100)] text-[var(--color-surface-900)] font-semibold'
+          : item.accent
+          ? 'text-[var(--color-surface-700)] hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-900)]'
+          : 'text-[var(--color-surface-500)] hover:bg-[var(--color-surface-100)] hover:text-[var(--color-surface-800)]',
+        collapsed && 'justify-center px-0 py-[9px]'
+      )}
+    >
+      {/* Active indicator — Linear-style left accent strip */}
+      {active && (
+        <span className="absolute left-0 top-1.5 bottom-1.5 w-[2.5px] bg-[var(--color-primary-500)] rounded-r-full" />
+      )}
+
+      <item.icon
+        strokeWidth={active ? 2.5 : 2}
+        className={cn(
+          'h-[15px] w-[15px] shrink-0 transition-colors duration-150',
+          active
+            ? 'text-[var(--color-surface-900)]'
+            : item.accent
+            ? 'text-[var(--color-surface-600)]'
+            : 'text-[var(--color-surface-400)]'
+        )}
+      />
+
+      {!collapsed && (
+        <>
+          <span className="flex-1 truncate leading-none">{item.label}</span>
+
+          {/* Accent badge for Investor Demo */}
+          {item.accent && (
+            <span className={cn(
+              'text-[9px] font-bold tracking-widest px-1.5 py-0.5 rounded uppercase flex items-center gap-1',
+              active
+                ? 'bg-[var(--color-surface-200)] text-[var(--color-surface-700)]'
+                : 'bg-[var(--color-success-50)] text-[var(--color-success-600)] border border-[var(--color-success-100)]'
+            )}>
+              <span className="w-1 h-1 rounded-full bg-current animate-pulse-live" />
+              Live
+            </span>
+          )}
+        </>
+      )}
+    </Link>
+  );
+}
+
+// ── Mobile Overlay ────────────────────────────────────────────────────
 
 interface MobileSidebarProps {
   open: boolean;
@@ -178,20 +254,16 @@ interface MobileSidebarProps {
 
 export function MobileSidebar({ open, onClose }: MobileSidebarProps) {
   if (!open) return null;
-
   return (
     <div className="fixed inset-0 z-50 lg:hidden">
-      {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+        className="fixed inset-0 bg-[var(--color-surface-900)]/25 backdrop-blur-[2px]"
         onClick={onClose}
       />
-
-      {/* Sidebar */}
       <Sidebar
         collapsed={false}
         onToggle={onClose}
-        className="relative z-50 shadow-2xl"
+        className="fixed left-0 top-0 z-50 shadow-xl animate-fade-in"
       />
     </div>
   );

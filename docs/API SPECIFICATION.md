@@ -3280,80 +3280,126 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 # src/api/middleware/rate_limit.py
 import time
 from collections import defaultdict
-from typing import DefaultDict
+from dataclasses import dataclass, field
+from typing import Optional
 
-from fastapi import Request, Response
-from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import Request, HTTPException
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
+
+import structlog
+from src.config import get_settings
+
+log = structlog.get_logger(__name__)
+
+# Rate limits per role (requests per minute)
+ROLE_LIMITS: dict[str, int] = {
+    "admin": 200,
+    "analyst": 100,
+    "readonly": 60,
+}
+
+
+@dataclass
+class TokenBucket:
+    """Token bucket for a single API key."""
+    capacity: int
+    tokens: float = 0.0
+    last_refill: float = field(default_factory=time.monotonic)
+
+    def __post_init__(self):
+        self.tokens = float(self.capacity)
+
+    def consume(self) -> bool:
+        """Try to consume a token. Returns True if allowed."""
+        now = time.monotonic()
+        elapsed = now - self.last_refill
+
+        # Refill tokens based on elapsed time (capacity per 60 seconds)
+        refill_rate = self.capacity / 60.0
+        self.tokens = min(self.capacity, self.tokens + elapsed * refill_rate)
+        self.last_refill = now
+
+        if self.tokens >= 1.0:
+            self.tokens -= 1.0
+            return True
+        return False
+
+    @property
+    def remaining(self) -> int:
+        return int(self.tokens)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
-    Sliding window rate limiter: N requests per minute per API key.
+    Per-key token bucket rate limiter.
+    Bypasses rate limiting for paths starting with /v1/webhooks.
 
-    Implementation: in-memory token bucket.
-    For production at scale: replace with Redis-backed sliding window.
-    The interface is identical — only the backing store changes.
-
-    Exempt paths: /health, /metrics (system probes must not be rate-limited)
+    Adds rate limit headers to all responses:
+        X-RateLimit-Limit: maximum requests per minute
+        X-RateLimit-Remaining: tokens remaining
     """
 
-    EXEMPT_PATHS = {"/health", "/metrics"}
-
-    def __init__(self, app, requests_per_minute: int = 100) -> None:
+    def __init__(self, app):
         super().__init__(app)
-        self.requests_per_minute = requests_per_minute
-        self.window_seconds = 60
-        # {api_key_prefix: [(timestamp, count)]}
-        self._buckets: DefaultDict[str, list[float]] = defaultdict(list)
+        settings = get_settings()
+        self._default_capacity = settings.api_rate_limit_per_minute
+        self._buckets: dict[str, TokenBucket] = defaultdict(
+            lambda: TokenBucket(capacity=self._default_capacity)
+        )
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        if request.url.path in self.EXEMPT_PATHS:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        # Skip rate limiting for health/metrics and webhook ingestion routes
+        path = request.url.path.rstrip("/")
+        if (
+            path in {"/health", "/health/ready", "/metrics"}
+            or path.startswith("/v1/webhooks")
+        ):
             return await call_next(request)
 
-        # Identify by API key prefix or IP fallback
-        api_key = request.headers.get("X-API-Key", "")
-        client_id = api_key[:8] if api_key else request.client.host
+        # Determine rate limit key and capacity
+        key_id = getattr(request.state, "api_key_id", None)
+        role = getattr(request.state, "api_role", None)
+        settings = get_settings()
+        capacity = settings.api_rate_limit_per_minute
 
-        now = time.time()
-        window_start = now - self.window_seconds
+        if key_id:
+            bucket_key = f"key:{key_id}"
+            capacity = ROLE_LIMITS.get(role, capacity)
+        else:
+            # Unauthenticated — rate limit by IP
+            client_ip = request.client.host if request.client else "unknown"
+            bucket_key = f"ip:{client_ip}"
 
-        # Clean expired timestamps
-        self._buckets[client_id] = [
-            ts for ts in self._buckets[client_id]
-            if ts > window_start
-        ]
+        # Get or create bucket
+        if bucket_key not in self._buckets:
+            self._buckets[bucket_key] = TokenBucket(capacity=capacity)
 
-        request_count = len(self._buckets[client_id])
-        remaining = max(0, self.requests_per_minute - request_count)
-        reset_at = int(window_start + self.window_seconds)
+        bucket = self._buckets[bucket_key]
 
-        if request_count >= self.requests_per_minute:
-            retry_after = int(self._buckets[client_id][0] + self.window_seconds - now)
-            return JSONResponse(
+        if not bucket.consume():
+            log.warning(
+                "rate_limit.exceeded",
+                bucket_key=bucket_key,
+                role=role,
+            )
+            raise HTTPException(
                 status_code=429,
+                detail="Rate limit exceeded. Try again later.",
                 headers={
-                    "X-RateLimit-Limit": str(self.requests_per_minute),
+                    "X-RateLimit-Limit": str(capacity),
                     "X-RateLimit-Remaining": "0",
-                    "X-RateLimit-Reset": str(reset_at),
-                    "Retry-After": str(max(1, retry_after)),
-                },
-                content={
-                    "error": "rate_limit_exceeded",
-                    "message": (
-                        f"Rate limit of {self.requests_per_minute} requests/minute exceeded. "
-                        f"Retry after {max(1, retry_after)} seconds."
-                    ),
-                    "request_id": getattr(request.state, "request_id", "unknown"),
+                    "Retry-After": "60",
                 },
             )
 
-        self._buckets[client_id].append(now)
-
         response = await call_next(request)
-        response.headers["X-RateLimit-Limit"] = str(self.requests_per_minute)
-        response.headers["X-RateLimit-Remaining"] = str(remaining - 1)
-        response.headers["X-RateLimit-Reset"] = str(reset_at)
+
+        # Add rate limit headers
+        response.headers["X-RateLimit-Limit"] = str(capacity)
+        response.headers["X-RateLimit-Remaining"] = str(bucket.remaining)
 
         return response
 ```

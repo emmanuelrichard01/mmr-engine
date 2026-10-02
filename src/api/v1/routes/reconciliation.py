@@ -66,12 +66,12 @@ async def get_reconciliation_summary(
         disc_result = await session.execute(
             text("""
                 SELECT
-                    discrepancy_type,
+                    classification AS discrepancy_type,
                     COUNT(*) AS count,
                     COALESCE(SUM(estimated_exposure_ngn), 0) AS total_exposure
                 FROM gold_discrepancies
-                WHERE DATE(detected_at AT TIME ZONE 'Africa/Lagos') = :d
-                GROUP BY discrepancy_type
+                WHERE DATE(raised_at AT TIME ZONE 'Africa/Lagos') = :d
+                GROUP BY classification
             """),
             {"d": target_date},
         )
@@ -176,9 +176,9 @@ async def list_discrepancies(
         result = await session.execute(
             text(f"""
                 SELECT
-                    d.id, d.transaction_id, d.discrepancy_type,
+                    d.id, d.transaction_id, d.classification AS discrepancy_type,
                     d.severity, d.estimated_exposure_ngn,
-                    d.evidence, d.status, d.detected_at,
+                    d.evidence, d.status, d.raised_at AS detected_at,
                     d.resolved_at, d.resolved_by,
                     s.psp_name, s.amount_ngn, s.psp_transaction_ref
                 FROM gold_discrepancies d
@@ -191,7 +191,7 @@ async def list_discrepancies(
                         WHEN 'medium' THEN 3
                         WHEN 'low' THEN 4
                     END,
-                    d.detected_at DESC
+                    d.raised_at DESC
                 LIMIT :limit OFFSET :offset
             """),
             params,
@@ -284,13 +284,13 @@ async def get_exposure(request: Request):
             text("""
                 SELECT
                     s.psp_name,
-                    d.discrepancy_type,
+                    d.classification AS discrepancy_type,
                     COUNT(*) AS open_count,
                     COALESCE(SUM(d.estimated_exposure_ngn), 0) AS total_exposure_ngn
                 FROM gold_discrepancies d
                 JOIN silver_canonical_transactions s ON d.transaction_id = s.id
                 WHERE d.status != 'resolved'
-                GROUP BY s.psp_name, d.discrepancy_type
+                GROUP BY s.psp_name, d.classification
                 ORDER BY total_exposure_ngn DESC
             """),
         )

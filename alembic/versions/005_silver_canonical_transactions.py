@@ -63,17 +63,9 @@ def upgrade() -> None:
             expected_settlement_at      TIMESTAMPTZ,
             settlement_sla_breached     BOOLEAN
                 GENERATED ALWAYS AS (
-                    CASE
-                        WHEN settled_at IS NOT NULL
-                             AND expected_settlement_at IS NOT NULL
-                             AND settled_at > expected_settlement_at
-                        THEN TRUE
-                        WHEN expected_settlement_at IS NOT NULL
-                             AND settled_at IS NULL
-                             AND NOW() > expected_settlement_at
-                        THEN TRUE
-                        ELSE FALSE
-                    END
+                    settled_at IS NOT NULL
+                    AND expected_settlement_at IS NOT NULL
+                    AND settled_at > expected_settlement_at
                 ) STORED,
 
             -- Status

@@ -54,19 +54,38 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
 
     Public paths (health, metrics, webhooks) are excluded.
     Webhook endpoints use HMAC validation instead.
+    CORS preflight (OPTIONS) requests are always passed through.
     """
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        # Skip auth for public paths
+        # ── Always pass CORS preflight requests ──────────────────────
+        # Browsers send OPTIONS before any cross-origin fetch.
+        # These never carry auth headers — blocking them breaks CORS entirely.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # ── Skip auth for public paths ───────────────────────────────
         path = request.url.path.rstrip("/")
-        if path in PUBLIC_PATHS or path.startswith("/v1/webhooks/"):
+        if path in PUBLIC_PATHS or path.startswith("/v1/webhooks/") or path.startswith("/v1/onboarding"):
             return await call_next(request)
 
         # Extract API key from header
         api_key = request.headers.get("X-API-Key")
         if not api_key:
+            # In development/demo mode, allow unauthenticated access
+            # to reconciliation endpoints so the dashboard works without
+            # needing a pre-provisioned API key.
+            from src.config import get_settings
+            settings = get_settings()
+            if settings.environment == "development":
+                # Attach a default demo context
+                request.state.api_key_id = None
+                request.state.api_key_name = "demo"
+                request.state.api_role = "admin"
+                return await call_next(request)
+
             raise HTTPException(
                 status_code=401,
                 detail="Missing X-API-Key header",

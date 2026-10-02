@@ -32,6 +32,12 @@
 | 10 | [RELEVANCE AND THREAT ASSESSMENT.md](RELEVANCE%20AND%20THREAT%20ASSESSMENT.md) | Competitive landscape + differentiation |
 | 11 | [GTM_STRATEGY.md](GTM_STRATEGY.md) | Data acquisition + go-to-market positioning |
 
+## Operations & Deployment
+
+| # | Document | Purpose |
+|---|----------|---------|
+| 12 | [OPERATIONS.md](OPERATIONS.md) | Dashboard walkthrough, data flow, demo mode, scripts, troubleshooting |
+
 ---
 
 ## Implementation Status

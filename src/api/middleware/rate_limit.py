@@ -26,6 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 import structlog
+from src.config import get_settings
 
 log = structlog.get_logger(__name__)
 
@@ -80,30 +81,36 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
+        settings = get_settings()
+        self._default_capacity = settings.api_rate_limit_per_minute
         self._buckets: dict[str, TokenBucket] = defaultdict(
-            lambda: TokenBucket(capacity=DEFAULT_LIMIT)
+            lambda: TokenBucket(capacity=self._default_capacity)
         )
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        # Skip rate limiting for health/metrics
+        # Skip rate limiting for health/metrics and webhook ingestion routes
         path = request.url.path.rstrip("/")
-        if path in {"/health", "/health/ready", "/metrics"}:
+        if (
+            path in {"/health", "/health/ready", "/metrics"}
+            or path.startswith("/v1/webhooks")
+        ):
             return await call_next(request)
 
         # Determine rate limit key and capacity
         key_id = getattr(request.state, "api_key_id", None)
         role = getattr(request.state, "api_role", None)
+        settings = get_settings()
+        capacity = settings.api_rate_limit_per_minute
 
         if key_id:
             bucket_key = f"key:{key_id}"
-            capacity = ROLE_LIMITS.get(role, DEFAULT_LIMIT)
+            capacity = ROLE_LIMITS.get(role, capacity)
         else:
             # Unauthenticated — rate limit by IP
             client_ip = request.client.host if request.client else "unknown"
             bucket_key = f"ip:{client_ip}"
-            capacity = DEFAULT_LIMIT
 
         # Get or create bucket
         if bucket_key not in self._buckets:
@@ -134,3 +141,4 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         response.headers["X-RateLimit-Remaining"] = str(bucket.remaining)
 
         return response
+

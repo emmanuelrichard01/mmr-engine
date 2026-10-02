@@ -23,8 +23,12 @@ def upgrade() -> None:
     op.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
     # btree_gist — range overlap indexes for time windows
     op.execute('CREATE EXTENSION IF NOT EXISTS "btree_gist"')
-    # pgaudit — CBN audit trail requirement
-    op.execute('CREATE EXTENSION IF NOT EXISTS "pgaudit"')
+    # NOTE: pgaudit (CBN audit trail) is NOT included here because:
+    #   1. It's not bundled with the stock postgres:16 Docker image
+    #   2. PostgreSQL aborts the whole transaction if CREATE EXTENSION fails
+    # For production: use a custom image with pgaudit, then run:
+    #   CREATE EXTENSION IF NOT EXISTS "pgaudit";
+    #   SET pgaudit.log = 'write, ddl';
 
 
 def downgrade() -> None:

@@ -18,17 +18,24 @@ const currencySymbols: Record<string, string> = {
 
 export function formatCurrency(
   amount: number,
-  currency: string = 'NGN'
+  currencyOrCompact: string | boolean = 'NGN'
 ): string {
+  // Support compact mode: formatCurrency(amount, true) → always abbreviates
+  const currency = typeof currencyOrCompact === 'boolean' ? 'NGN' : currencyOrCompact;
+  const compact  = typeof currencyOrCompact === 'boolean' ? currencyOrCompact : false;
+
   const symbol = currencySymbols[currency] ?? currency;
   const absAmount = Math.abs(amount);
   const sign = amount < 0 ? '-' : '';
 
   if (absAmount >= 1_000_000_000) {
-    return `${sign}${symbol}${(absAmount / 1_000_000_000).toFixed(2)}B`;
+    return `${sign}${symbol}${(absAmount / 1_000_000_000).toFixed(compact ? 1 : 2)}B`;
   }
   if (absAmount >= 1_000_000) {
-    return `${sign}${symbol}${(absAmount / 1_000_000).toFixed(2)}M`;
+    return `${sign}${symbol}${(absAmount / 1_000_000).toFixed(compact ? 1 : 2)}M`;
+  }
+  if (compact && absAmount >= 1_000) {
+    return `${sign}${symbol}${(absAmount / 1_000).toFixed(1)}K`;
   }
 
   return `${sign}${symbol}${absAmount.toLocaleString('en-NG', {

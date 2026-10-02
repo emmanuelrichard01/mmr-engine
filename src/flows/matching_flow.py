@@ -30,9 +30,6 @@ from src.engine.discrepancy import (
     DiscrepancyType,
 )
 from src.storage.postgres import pipeline_session
-from src.observability.metrics import (
-    SILVER_RECORDS_WRITTEN, GOLD_MATCHES_COUNTER,
-)
 
 
 @task(name="fetch-unmatched-transactions", tags=["gold", "matching"])
@@ -139,11 +136,11 @@ async def write_gold_pairs(
                         (transaction_a_id, transaction_b_id, match_strategy,
                          confidence_score, amount_a_ngn, amount_delta_ngn,
                          is_within_fx_threshold, status,
-                         confidence_evidence, dbt_run_id)
+                         match_evidence, dbt_run_id)
                     VALUES
                         (:a_id, :b_id, :strategy, :confidence,
                          :amount_a, :delta, :fx_flag, :status,
-                         :evidence::jsonb, :run_id)
+                         CAST(:evidence AS JSONB), :run_id)
                     ON CONFLICT (transaction_a_id, transaction_b_id) DO NOTHING
                 """),
                 {
@@ -192,18 +189,19 @@ async def classify_and_write_discrepancies(
             await session.execute(
                 text("""
                     INSERT INTO gold_discrepancies
-                        (transaction_id, discrepancy_type, severity,
-                         estimated_exposure_ngn, evidence,
-                         detected_by_run_id, status)
+                        (transaction_id, classification, severity,
+                         confidence_score, estimated_exposure_ngn, evidence,
+                         dbt_run_id, status)
                     VALUES
-                        (:tx_id, :dtype, :severity, :exposure,
-                         :evidence::jsonb, :run_id, 'open')
-                    ON CONFLICT (transaction_id, discrepancy_type) DO NOTHING
+                        (:tx_id, CAST(:dtype AS discrepancy_class_enum), :severity,
+                         :confidence, :exposure, CAST(:evidence AS JSONB), :run_id, 'open')
+                    ON CONFLICT (transaction_id, classification) DO NOTHING
                 """),
                 {
                     "tx_id": tx["id"],
                     "dtype": result.discrepancy_type.value,
                     "severity": result.severity.value,
+                    "confidence": 1.0,
                     "exposure": result.estimated_exposure_ngn,
                     "evidence": json.dumps(result.evidence),
                     "run_id": run_id,
@@ -220,20 +218,74 @@ async def silver_to_gold_matching_flow(
     limit: int = 500,
 ) -> dict:
     """Orchestrate the full Silver → Gold matching pipeline."""
-    run_id = str(uuid4())
-    unmatched = await fetch_unmatched_transactions(psp_name, limit)
-    if not unmatched:
-        return {"run_id": run_id, "matched": 0, "discrepancies": 0}
-    results = await run_matching_engine_task(unmatched)
-    pairs_written = await write_gold_pairs(results, run_id)
-    unmatched_txs = [
-        unmatched[i] for i, r in enumerate(results) if r["matched_id"] is None
-    ]
-    disc_written = await classify_and_write_discrepancies(unmatched_txs, run_id)
-    return {
-        "run_id": run_id,
-        "total_processed": len(unmatched),
-        "matched": pairs_written,
-        "discrepancies": disc_written,
-        "unmatched_remaining": len(unmatched) - pairs_written,
-    }
+    run_id = uuid4()
+
+    # Register start of pipeline run
+    async with pipeline_session() as session:
+        await session.execute(
+            text("""
+                INSERT INTO system_pipeline_runs (id, flow_name, status, triggered_by)
+                VALUES (:id, :flow_name, 'running', 'scheduler')
+            """),
+            {"id": run_id, "flow_name": "silver-to-gold-matching-flow"}
+        )
+
+    try:
+        unmatched = await fetch_unmatched_transactions(psp_name, limit)
+        if not unmatched:
+            # Register successful completion of pipeline run (0 records)
+            async with pipeline_session() as session:
+                await session.execute(
+                    text("""
+                        UPDATE system_pipeline_runs
+                        SET status = 'completed', completed_at = NOW(), records_processed = 0
+                        WHERE id = :id
+                    """),
+                    {"id": run_id}
+                )
+            return {"run_id": str(run_id), "matched": 0, "discrepancies": 0}
+
+        results = await run_matching_engine_task(unmatched)
+        pairs_written = await write_gold_pairs(results, str(run_id))
+        unmatched_txs = [
+            unmatched[i] for i, r in enumerate(results) if r["matched_id"] is None
+        ]
+        disc_written = await classify_and_write_discrepancies(unmatched_txs, str(run_id))
+
+        # Register successful completion of pipeline run
+        async with pipeline_session() as session:
+            await session.execute(
+                text("""
+                    UPDATE system_pipeline_runs
+                    SET status = 'completed', completed_at = NOW(), records_processed = :proc
+                    WHERE id = :id
+                """),
+                {"id": run_id, "proc": len(unmatched)}
+            )
+
+        return {
+            "run_id": str(run_id),
+            "total_processed": len(unmatched),
+            "matched": pairs_written,
+            "discrepancies": disc_written,
+            "unmatched_remaining": len(unmatched) - pairs_written,
+        }
+
+    except Exception as e:
+        import traceback
+        # Register failed pipeline run
+        async with pipeline_session() as session:
+            await session.execute(
+                text("""
+                    UPDATE system_pipeline_runs
+                    SET status = 'failed', completed_at = NOW(),
+                        error_message = :err, error_traceback = :tb
+                    WHERE id = :id
+                """),
+                {
+                    "id": run_id,
+                    "err": str(e),
+                    "tb": traceback.format_exc()
+                }
+            )
+        raise

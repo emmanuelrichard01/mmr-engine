@@ -3,7 +3,7 @@
 > **Purpose:** This file provides full context for any AI agent continuing work on this project.
 > It documents what has been built, the current state, and what remains.
 >
-> **Last Updated:** 2026-05-20
+> **Last Updated:** 2026-06-05
 
 ---
 
@@ -14,7 +14,7 @@
 - **Type:** Production-grade fintech data engineering system + executive dashboard
 - **Backend:** Python 3.12 — FastAPI + Prefect 3 + dbt + SQLAlchemy async
 - **Dashboard:** Next.js 15 + React 19 + TypeScript + Tailwind CSS v4 + Recharts
-- **Database:** PostgreSQL 16 (with pgcrypto, pg_trgm, btree_gist, pgaudit extensions)
+- **Database:** PostgreSQL 16 (with pgcrypto, pg_trgm, btree_gist; pgaudit in production only)
 - **Message Queue:** Redpanda (Kafka-compatible)
 - **Object Storage:** MinIO (S3-compatible, Object Lock for compliance)
 - **Monitoring:** Prometheus + Grafana (9-panel dashboard)
@@ -39,6 +39,7 @@ All specifications live in `/docs/`. These are the canonical references:
 | `CDA.md` | **Credential & Deployment Architecture** — 3 deployment models (A/B/C), migration paths, trust model |
 | `RELEVANCE AND THREAT ASSESSMENT.md` | Competitive landscape, differentiation strategy |
 | `GTM_STRATEGY.md` | Data acquisition paths, commercial positioning, demo scripts |
+| `OPERATIONS.md` | **Operations guide** — dashboard pages, data flow, demo mode, scripts, troubleshooting |
 
 ---
 
@@ -70,7 +71,7 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 | **Docker** | `Dockerfile`, `docker-compose.yml`, `docker-compose.monitoring.yml`, `docker-compose.test.yml` | Multi-stage build (api/worker/migrations/dashboard), 10 services |
 | **Init Scripts** | `scripts/init_postgres.sql` | Creates 4 DB roles on first boot |
 | **Infra Config** | `infra/prometheus/`, `infra/redpanda/` | Prometheus scrape config + 5 alert rules, Redpanda Console |
-| **Migrations** | `alembic/versions/000–012` | 13 migrations: extensions, 13 enums, 14 tables, 1 materialized view, 1 trigger function, 1 SQL function, role permissions, seed data |
+| **Migrations** | `alembic/versions/000–014` | 15 migrations: extensions, 13 enums, 14 tables, 1 materialized view, 1 trigger function, 1 SQL function, unique constraints, role permissions, seed data |
 | **Observability** | `src/observability/metrics.py`, `src/observability/logging.py` | 23 Prometheus metrics (webhooks, pipeline, matching, financial state, API, alerting, operational health), structlog JSON/console |
 | **Storage** | `src/storage/postgres.py` | Role-based async connection pools (pipeline/api/readonly) |
 | **API** | `src/api/main.py` | FastAPI factory with `/health`, `/health/ready` (deep), `/metrics`, CORS, exception handler |
@@ -161,23 +162,80 @@ PSP Webhooks → HMAC validation → Redpanda topics → Bronze (MinIO Parquet)
 | **Makefile** | `Makefile` | Added `security-check`, `test-all`, `help` targets |
 | **Dashboard Config** | `.env.local`, `.env.example` (new) | Development environment defaults for Next.js |
 
+### Week 7: UX Polish + Infrastructure Hardening ✅ (12 new/modified files)
+
+| Category | Files | Details |
+|----------|-------|---------|
+| **Walkthrough Tour** | `walkthrough.tsx` (new) | Custom SVG spotlight mask, keyboard nav, step progress dots, smooth fade animations — no external dependencies |
+| **Welcome Banner** | `welcome-banner.tsx` (new) | First-visit dismissable banner with 3 action cards (Tour, Connect PSPs, Docs) |
+| **Page Help** | `page-help.tsx` (new) | Collapsible help panels on Overview, Discrepancies, PSP Health, Reports |
+| **Onboarding Polish** | `onboarding/page.tsx` (modified) | Added "Skip to Demo" button, welcome header with 2-minute estimate |
+| **Migration 005 Fix** | `005_silver_canonical_transactions.py` | Fixed `GENERATED ALWAYS AS` — removed volatile `NOW()`, now immutable-only |
+| **Migration 013** | `013_unique_gold_pairs_constraint.py` (new) | `UNIQUE (transaction_a_id, transaction_b_id)` on gold pairs |
+| **Migration 014** | `014_add_severity_and_unique_constraint.py` (new) | `severity` column + `UNIQUE (transaction_id, classification)` on discrepancies |
+| **Docker Fixes** | `docker-compose.yml` | MinIO init: removed failing Object Lock; Prefect server: added healthcheck; worker/consumer: `service_healthy` dependency |
+| **Dockerfile** | `Dockerfile` | Added `PYTHONPATH=/app`, `PYTHONUNBUFFERED=1`, full `src/` copy for migrations |
+| **Operations Guide** | `docs/OPERATIONS.md` (new) | Dashboard page explanations, data flow, demo mode, scripts reference, troubleshooting |
+| **Doc Sync** | `ERD.md`, `DATA DICTIONARY.md` | Updated `settlement_sla_breached` definition to match corrected migration |
+| **README** | `README.md` | Added OPERATIONS.md to docs table, updated migration count, component list |
+
+### Week 8: Production Hardening ✅ (5 files modified)
+
+| Category | Files | Details |
+|----------|-------|---------|
+| **Auth Middleware Fix** | `auth.py` | Fixed critical CORS preflight bug — `OPTIONS` requests now bypass auth; added dev mode unauthenticated access for dashboard |
+| **Redpanda Init** | `docker-compose.yml` | Added `redpanda_init` service to pre-create all 5 Kafka topics on startup; consumer_worker depends on `service_completed_successfully` |
+| **Makefile** | `Makefile` | Added `status`, `logs-errors`, `rebuild`, `clean-data` targets; replaced fixed `sleep` with `pg_isready` polling |
+| **OPERATIONS.md** | `docs/OPERATIONS.md` | Added API Authentication section (dev vs prod mode); added 3 new troubleshooting entries (FX 404, Prefect startup, MinIO Object Lock) |
+| **Gitignore** | `.gitignore` | Added `scripts/demo_data/`, `*.log`, `logs/`, `.gemini/`, `analysis_results.md` |
+
+### Week 9: Dashboard Overhaul + Investor Demo ✅ (14 new/modified files)
+
+| Category | Files | Details |
+|----------|-------|---------|
+| **Design System** | `app/globals.css` | Added `color-scheme` declarations, fixed select SVG to use `currentColor`, pipeline animation classes for investor demo |
+| **Theme** | `app/layout.tsx` | Inter + JetBrains Mono fonts; ThemeProvider with `data-theme` attribute; dark mode support |
+| **Sidebar** | `components/sidebar.tsx` | Brand: "MMR Engine / by Emmanuel Richard"; logout now redirects to `/onboarding`; Investor Demo link with "Live" accent badge; functional collapse |
+| **Dashboard Layout** | `app/(dashboard)/layout.tsx` | Removed non-functional search bar; fixed initials `ER`; theme toggle |
+| **KPI Card** | `components/kpi-card.tsx` | Fixed SVG gradient ID collision (React `useId()`); replaced Tailwind color classes with CSS custom properties; sparkline dot |
+| **Demo Banner** | `components/demo-banner.tsx` | Left-edge accent stripe; gradient background; "Connect live API" CTA link; WifiOff icon in demo mode |
+| **PSP Logos** | `components/psp-logos.tsx` | Pre-existing SVG logos confirmed; used across all pages |
+| **Investor Demo Page** | `app/(dashboard)/investor/page.tsx` | NEW: 6-section live demo — pipeline simulation state machine (webhook→bronze→silver→gold), live KPIs from real hooks, problem/solution narrative, medallion architecture diagram, tech stack, CTA |
+| **Settings Page** | `app/(dashboard)/settings/page.tsx` | Full rewrite: 4 live tabs — PSP Connections (test via /health/ready), API Keys (masked/reveal), Alert Thresholds (localStorage persist), System Health (live /health/ready probe) |
+| **Utils** | `lib/utils.ts` | `formatCurrency` overloaded with compact mode: `formatCurrency(amount, true)` → abbreviated |
+| **Makefile** | `Makefile` | Full overhaul: non-blocking `make up`, `make doctor`, `make demo-investor`, `make investor-reset`, `make reset`, grouped help with colors |
+| **Doctor Script** | `scripts/doctor.py` | Pre-flight check: Docker, Compose, .env, Python, Node.js, ports, required files |
+| **Investor Demo Script** | `scripts/investor_demo.py` | 8-step verified pipeline runner with actual DB record count verification and colored output |
+| **Postgres Wait Script** | `scripts/wait_for_postgres.py` | Replaces brittle Python one-liner; polls pg_isready with progress dots and timeout |
+
 ---
 
 ## Remaining Work
 
-> All core features are implemented. The following are enhancement opportunities:
+> Core features, UX polish, and investor demo are all complete. The following are the remaining enhancement opportunities:
 
-### Future Enhancements (Not Blocking)
-- Guided investor walkthrough overlay (interactive tooltip tour)
-- Login page with session-based authentication (currently uses API key in env)
-- Per-PSP health API endpoint (currently falls back to demo data)
-- Daily summaries aggregation API (not yet exposed via REST)
+### Phase 2: API Wiring (Remaining)
+- Per-PSP health API endpoint (currently falls back to demo data for settlement window)
+- Daily summaries aggregation API (not yet exposed via REST — `gold_reconciliation_summary` mat. view exists)
 - Report download endpoint (`GET /v1/reports/daily/{date}/download`)
-- Settings page API wiring (currently local state only)
+- Settings: team management requires a `users` table and session auth
 
-### Documentation Polish
-- Update CDA.md: fix repo URL references
-- Create condensed client-facing credential document
+### Phase 3: Production Hardening
+- Login page with session-based authentication (currently uses API key in .env)
+- Grafana dashboard JSON provisioning (panels defined but not auto-imported)
+- Rate limiting dashboard (expose `system_api_keys.rate_limit_*` metrics)
+
+### Documentation
+- Grafana provisioning guide
+- Production deployment guide (Option B: managed cloud)
+
+### Documentation Polish ✅
+- Update CDA.md: fix repo URL references (Done)
+- Correct non-existent `make seed` references (Done)
+- Add unique constraints to `ERD.md` and `DATA ARCHITECTURE.md` schemas (Done)
+- Fix repository root folder paths in tree diagrams (Done)
+- Create OPERATIONS.md with dashboard walkthrough + troubleshooting (Done)
+- Sync ERD/Data Dictionary with migration fixes (Done)
 
 ---
 
@@ -245,15 +303,19 @@ Gold Layer:
 
 ```bash
 cp .env.example .env           # Configure credentials
-make up                        # Start 10-service Docker graph
-make migrate                   # Run 13 Alembic migrations
+make doctor                    # Pre-flight: Docker, .env, ports, Python
+make up                        # Start 10-service Docker graph (non-blocking)
+make migrate                   # Run 15 Alembic migrations (000-014)
 make smoke                     # Verify all services healthy
 
 # Dashboard (local dev)
 cd dashboard && npm install && npm run dev
 
-# Full investor demo
-make demo-investor             # All services + Grafana + 30-day data
+# Full investor demo (30 days data, verified pipeline)
+make demo-investor             # All services + Grafana + 30-day data + verification
+
+# Clean slate
+make investor-reset            # Destroy all data, rebuild, full demo setup
 ```
 
 ---

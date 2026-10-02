@@ -36,6 +36,10 @@ from decimal import Decimal
 
 import requests
 
+# Configure stdout for UTF-8 encoding (especially on Windows)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 API_BASE_URL = "http://localhost:8000"

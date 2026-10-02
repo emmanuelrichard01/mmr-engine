@@ -267,22 +267,19 @@ dns:
 ```bash
 # Step 1: Clone the repository
 git clone https://github.com/emmanuelrichard01/mmr-engine.git
-cd reconciliation-engine
+cd mmr-engine
 
 # Step 2: Configure environment
 cp .env.example .env
 # Edit .env with client's actual credentials (see below)
 
-# Step 3: Run database migrations
-make migrate
-
-# Step 4: Seed configuration data
-make seed
-
-# Step 5: Launch full stack
+# Step 3: Launch full stack
 make up
 
-# Step 6: Verify health
+# Step 4: Run database migrations
+make migrate
+
+# Step 5: Verify health
 make smoke
 ```
 

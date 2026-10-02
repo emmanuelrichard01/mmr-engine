@@ -562,7 +562,10 @@ CREATE TABLE gold_reconciliation_pairs (
     -- Lineage
     dbt_run_id              VARCHAR(100),
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Constraints
+    CONSTRAINT uq_pairs_transaction_a_b UNIQUE (transaction_a_id, transaction_b_id)
 );
 
 CREATE INDEX idx_pairs_status ON gold_reconciliation_pairs (status);

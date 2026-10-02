@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { useDiscrepancies, useResolveDiscrepancy, useAPIStatus } from '@/lib/hooks';
+import { useDiscrepancies, useResolveDiscrepancy } from '@/lib/hooks';
 import { DemoBanner } from '@/components/demo-banner';
 import { formatCurrency, getRelativeTime, cn } from '@/lib/utils';
+import { PSPLogo } from '@/components/psp-logos';
 import {
   AlertCircle, X, CheckCircle2, Clock, Search,
-  ChevronRight, Filter, ArrowUpDown, Loader2
+  ChevronRight, ArrowUpDown, Loader2
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip
@@ -16,11 +17,11 @@ type Severity = 'critical' | 'high' | 'medium' | 'low' | 'all';
 type Status = 'open' | 'investigating' | 'resolved' | 'all';
 type PSPFilter = 'all' | 'paystack' | 'flutterwave' | 'mpesa';
 
-const SEVERITY_STYLES: Record<string, { dot: string; bg: string; text: string }> = {
-  critical: { dot: 'bg-[var(--color-danger-500)]', bg: 'badge-critical', text: 'text-[var(--color-danger-400)]' },
-  high:     { dot: 'bg-[var(--color-warning-500)]', bg: 'badge-high', text: 'text-[var(--color-warning-400)]' },
-  medium:   { dot: 'bg-[var(--color-primary-400)]', bg: 'badge-medium', text: 'text-[var(--color-primary-400)]' },
-  low:      { dot: 'bg-[var(--color-success-500)]', bg: 'badge-low', text: 'text-[var(--color-success-400)]' },
+const SEVERITY_STYLES: Record<string, { dot: string; text: string; bg: string }> = {
+  critical: { dot: 'var(--color-danger-500)', text: 'text-[var(--color-danger-500)]', bg: 'bg-[var(--color-danger-50)]' },
+  high:     { dot: 'var(--color-warning-500)', text: 'text-[var(--color-warning-500)]', bg: 'bg-[var(--color-warning-50)]' },
+  medium:   { dot: 'var(--color-primary-500)', text: 'text-[var(--color-primary-500)]', bg: 'bg-[var(--color-primary-50)]' },
+  low:      { dot: 'var(--color-success-500)', text: 'text-[var(--color-success-500)]', bg: 'bg-[var(--color-success-50)]' },
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -31,7 +32,12 @@ const TYPE_LABELS: Record<string, string> = {
   late_settlement: 'Late Settlement',
 };
 
-const DONUT_COLORS = ['#f43f5e', '#f59e0b', '#6366f1', '#10b981'];
+const STATUS_BADGE: Record<string, string> = {
+  open:          'badge badge-critical',
+  investigating: 'badge badge-high',
+  escalated:     'badge badge-medium',
+  resolved:      'badge badge-low',
+};
 
 export default function DiscrepanciesPage() {
   const { data: discrepancies, isLoading, isUsingDemoData } = useDiscrepancies();
@@ -65,15 +71,15 @@ export default function DiscrepanciesPage() {
     const counts = { critical: 0, high: 0, medium: 0, low: 0 };
     allDiscrepancies.forEach(d => { counts[d.severity]++; });
     return [
-      { name: 'Critical', value: counts.critical, color: '#f43f5e' },
-      { name: 'High', value: counts.high, color: '#f59e0b' },
-      { name: 'Medium', value: counts.medium, color: '#6366f1' },
-      { name: 'Low', value: counts.low, color: '#10b981' },
+      { name: 'Critical', value: counts.critical, color: 'var(--color-danger-500)' },
+      { name: 'High', value: counts.high, color: 'var(--color-warning-500)' },
+      { name: 'Medium', value: counts.medium, color: 'var(--color-primary-500)' },
+      { name: 'Low', value: counts.low, color: 'var(--color-success-500)' },
     ];
   }, [allDiscrepancies]);
 
   const severityChips: { label: string; value: Severity }[] = [
-    { label: 'All', value: 'all' },
+    { label: 'All Issues', value: 'all' },
     { label: 'Critical', value: 'critical' },
     { label: 'High', value: 'high' },
     { label: 'Medium', value: 'medium' },
@@ -81,32 +87,32 @@ export default function DiscrepanciesPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5 pb-8">
       {/* Demo Banner */}
       {isUsingDemoData && <DemoBanner />}
 
       {/* Header */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between animate-fade-in">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--color-surface-900)]">
+          <h1 className="text-display">
             Discrepancies
           </h1>
-          <p className="text-sm text-[var(--color-surface-500)] mt-1">
-            {filtered.length} discrepancies found · {allDiscrepancies.filter(d => d.status === 'open').length} open
+          <p className="text-body mt-1.5">
+            {filtered.length} issues · {allDiscrepancies.filter(d => d.status === 'open').length} open
           </p>
         </div>
 
         {/* Donut chart mini */}
-        <div className="flex items-center gap-4">
-          <div className="w-20 h-20">
+        <div className="flex items-center gap-4 bg-[var(--color-surface-50)] px-4 py-2.5 rounded-[12px] border border-[var(--color-surface-200)] shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+          <div className="w-[42px] h-[42px] shrink-0">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
                   data={severityCounts}
                   cx="50%"
                   cy="50%"
-                  innerRadius={22}
-                  outerRadius={36}
+                  innerRadius={15}
+                  outerRadius={21}
                   dataKey="value"
                   strokeWidth={0}
                 >
@@ -116,92 +122,102 @@ export default function DiscrepanciesPage() {
                 </Pie>
                 <Tooltip
                   contentStyle={{
-                    background: 'var(--color-surface-100)',
-                    border: '1px solid var(--color-surface-300)',
+                    background: 'var(--color-surface-0)',
+                    border: '1px solid var(--color-surface-200)',
                     borderRadius: '8px',
                     color: 'var(--color-surface-800)',
-                    fontSize: '12px',
+                    fontSize: '11px',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
                   }}
                 />
               </PieChart>
             </ResponsiveContainer>
           </div>
-          <div className="flex flex-wrap gap-2 text-xs">
-            {severityCounts.map(s => (
-              <span key={s.name} className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
-                {s.name}: {s.value}
-              </span>
-            ))}
+          <div className="flex flex-col gap-1 text-[11px] font-medium text-[var(--color-surface-600)]">
+            <div className="grid grid-cols-2 gap-x-5 gap-y-1">
+              {severityCounts.map(s => (
+                <span key={s.name} className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
+                  <span>{s.name}: <strong className="text-[var(--color-surface-900)] font-bold">{s.value}</strong></span>
+                </span>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Filters Row */}
-      <div className="flex flex-wrap items-center gap-3">
-        {/* Severity chips */}
-        <div className="flex gap-1.5">
-          {severityChips.map(chip => (
+      {/* Severity Filter Tabs */}
+      <div className="flex border-b border-[var(--color-surface-200)] w-full gap-6">
+        {severityChips.map(chip => {
+          const active = severityFilter === chip.value;
+          return (
             <button
               key={chip.value}
               onClick={() => setSeverityFilter(chip.value)}
               className={cn(
-                'px-3 py-1 rounded-full text-xs font-medium transition-all',
-                severityFilter === chip.value
-                  ? 'bg-[var(--color-primary-600)] text-white'
-                  : 'bg-[var(--color-surface-100)] text-[var(--color-surface-500)] hover:bg-[var(--color-surface-200)]'
+                'pb-3 text-[13px] font-semibold transition-all relative cursor-pointer outline-none',
+                active
+                  ? 'text-[var(--color-surface-900)]'
+                  : 'text-[var(--color-surface-500)] hover:text-[var(--color-surface-750)]'
               )}
             >
               {chip.label}
+              {active && (
+                <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[var(--color-surface-900)] rounded-full animate-fade-in" />
+              )}
             </button>
-          ))}
-        </div>
+          );
+        })}
+      </div>
 
-        {/* PSP filter */}
-        <select
-          value={pspFilter}
-          onChange={e => setPspFilter(e.target.value as PSPFilter)}
-          className="px-3 py-1.5 rounded-lg bg-[var(--color-surface-100)] border border-[var(--color-surface-200)] text-sm text-[var(--color-surface-700)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary-500)]/40"
-        >
-          <option value="all">All PSPs</option>
-          <option value="paystack">Paystack</option>
-          <option value="flutterwave">Flutterwave</option>
-          <option value="mpesa">M-Pesa</option>
-        </select>
-
-        {/* Status filter */}
-        <select
-          value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value as Status)}
-          className="px-3 py-1.5 rounded-lg bg-[var(--color-surface-100)] border border-[var(--color-surface-200)] text-sm text-[var(--color-surface-700)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary-500)]/40"
-        >
-          <option value="all">All Status</option>
-          <option value="open">Open</option>
-          <option value="investigating">Investigating</option>
-          <option value="resolved">Resolved</option>
-        </select>
-
+      {/* Search and Filters Toolbar */}
+      <div className="flex flex-col sm:flex-row items-center w-full gap-3">
         {/* Search */}
-        <div className="relative ml-auto">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-surface-400)]" />
+        <div className="relative flex-1 w-full sm:w-auto">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-surface-400)] pointer-events-none" strokeWidth={2} />
           <input
             type="text"
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
             placeholder="Search reference or name..."
-            className="pl-9 pr-3 py-1.5 rounded-lg bg-[var(--color-surface-100)] border border-[var(--color-surface-200)] text-sm text-[var(--color-surface-700)] placeholder:text-[var(--color-surface-400)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary-500)]/40 w-64"
+            className="input pl-9"
           />
+        </div>
+
+        {/* Dropdowns Group */}
+        <div className="flex items-center w-full sm:w-auto gap-2">
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value as Status)}
+            className="select w-[140px]"
+          >
+            <option value="all">Status: All</option>
+            <option value="open">Open</option>
+            <option value="investigating">Investigating</option>
+            <option value="resolved">Resolved</option>
+          </select>
+
+          <select
+            value={pspFilter}
+            onChange={e => setPspFilter(e.target.value as PSPFilter)}
+            className="select w-[140px]"
+          >
+            <option value="all">PSP: All</option>
+            <option value="paystack">Paystack</option>
+            <option value="flutterwave">Flutterwave</option>
+            <option value="mpesa">M-Pesa</option>
+          </select>
         </div>
       </div>
 
       {/* Table */}
-      <div className="card overflow-hidden !p-0">
+      <div className="card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-left whitespace-nowrap">
             <thead>
-              <tr className="border-b border-[var(--color-surface-200)]">
-                {['Severity', 'Type', 'PSP', 'Reference', 'Amount', 'Beneficiary', 'Age', 'Status', ''].map(h => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-medium text-[var(--color-surface-500)] uppercase tracking-wider">
+            <tr className="bg-[var(--color-surface-50)] border-b border-[var(--color-surface-200)]">
+                {['Discrepancy', 'PSP', 'Amount', 'Beneficiary', 'Age', 'Status', ''].map(h => (
+                  <th key={h} className="table-header first:pl-5 last:pr-5">
                     {h}
                   </th>
                 ))}
@@ -210,158 +226,185 @@ export default function DiscrepanciesPage() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="text-center py-16 text-[var(--color-surface-400)]">
-                    <AlertCircle className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                    <p className="font-medium">No discrepancies match your filters</p>
-                    <p className="text-xs mt-1">Try adjusting the severity or PSP filters</p>
+                  <td colSpan={7} className="text-center py-20 bg-[var(--color-surface-0)]">
+                    <AlertCircle className="w-10 h-10 mx-auto mb-4 text-[var(--color-surface-300)]" strokeWidth={1.5} />
+                    <p className="text-[14px] font-bold text-[var(--color-surface-900)]">No discrepancies match</p>
+                    <p className="text-[13px] text-[var(--color-surface-500)] mt-1">Try adjusting the filters or search term</p>
                   </td>
                 </tr>
-              ) : filtered.map((d, idx) => (
-                <tr
-                  key={d.id}
-                  onClick={() => setSelectedId(d.id)}
-                  className={cn(
-                    'border-b border-[var(--color-surface-200)]/50 cursor-pointer transition-colors animate-fade-in',
-                    selectedId === d.id
-                      ? 'bg-[var(--color-primary-500)]/5'
-                      : 'hover:bg-[var(--color-surface-100)]'
-                  )}
-                  style={{ animationDelay: `${idx * 0.03}s` }}
-                >
-                  <td className="px-4 py-3">
-                    <span className={cn('badge', SEVERITY_STYLES[d.severity].bg)}>
-                      <span className={cn('w-1.5 h-1.5 rounded-full', SEVERITY_STYLES[d.severity].dot)} />
-                      {d.severity}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-[var(--color-surface-700)]">{TYPE_LABELS[d.type] || d.type}</td>
-                  <td className="px-4 py-3 capitalize text-[var(--color-surface-600)]">{d.psp}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-[var(--color-surface-500)]">{d.reference}</td>
-                  <td className="px-4 py-3 font-medium text-[var(--color-surface-800)]">{formatCurrency(d.amount)}</td>
-                  <td className="px-4 py-3 text-[var(--color-surface-600)]">{d.beneficiaryName}</td>
-                  <td className="px-4 py-3 text-[var(--color-surface-500)]">{d.ageHours}h</td>
-                  <td className="px-4 py-3">
-                    <span className={cn(
-                      'text-xs font-medium capitalize',
-                      d.status === 'open' ? 'text-[var(--color-danger-400)]' :
-                      d.status === 'investigating' ? 'text-[var(--color-warning-400)]' :
-                      'text-[var(--color-success-400)]'
-                    )}>
-                      {d.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <ChevronRight className="w-4 h-4 text-[var(--color-surface-400)]" />
-                  </td>
-                </tr>
-              ))}
+              ) : (
+                filtered.map((d, idx) => (
+                  <tr
+                    key={d.id}
+                    onClick={() => setSelectedId(d.id)}
+                    className={cn(
+                      'border-b border-[var(--color-surface-100)] last:border-0 hover:bg-[var(--color-surface-50)] transition-colors cursor-pointer group bg-[var(--color-surface-0)]',
+                      selectedId === d.id ? 'bg-[var(--color-surface-50)]' : ''
+                    )}
+                    style={{ animationDelay: `${idx * 0.02}s` }}
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <span
+                          className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{ background: SEVERITY_STYLES[d.severity]?.dot ?? 'var(--color-surface-300)' }}
+                        />
+                        <div>
+                          <p className="text-[13px] font-semibold text-[var(--color-surface-900)] group-hover:text-[var(--color-primary-600)] transition-colors">
+                            {TYPE_LABELS[d.type] || d.type}
+                          </p>
+                          <p className="text-mono text-[var(--color-surface-400)] mt-0.5">
+                            {d.reference}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="flex items-center gap-1.5">
+                        <PSPLogo name={d.psp} iconOnly className="w-4 h-4 shrink-0" />
+                        <span className="text-[12px] font-medium text-[var(--color-surface-700)] capitalize">
+                          {d.psp}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-[13px] font-bold text-[var(--color-surface-900)] tabular-nums">
+                        {formatCurrency(d.amount)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-[12px] font-medium text-[var(--color-surface-700)] max-w-[140px] truncate">
+                      {d.beneficiaryName}
+                    </td>
+                    <td className="px-4 py-3 text-[11px] font-medium text-[var(--color-surface-400)] tabular-nums">
+                      {d.ageHours}h
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={STATUS_BADGE[d.status] ?? 'badge badge-neutral'}>
+                        {d.status.charAt(0).toUpperCase() + d.status.slice(1)}
+                      </span>
+                    </td>
+                    <td className="py-3 pr-5">
+                      <ChevronRight className="w-4 h-4 text-[var(--color-surface-300)] group-hover:text-[var(--color-surface-600)]" strokeWidth={2.5} />
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Slide-over Detail Panel */}
+      {/* Slide-over Inspector Panel */}
       {selected && (
         <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setSelectedId(null)} />
-          <div className="relative w-full max-w-lg bg-[var(--color-surface-50)] border-l border-[var(--color-surface-200)] overflow-y-auto animate-fade-in">
-            <div className="p-6 space-y-6">
+          <div className="absolute inset-0 bg-[var(--color-surface-900)]/20 backdrop-blur-sm transition-opacity duration-300" onClick={() => setSelectedId(null)} />
+          <div className="relative w-full max-w-[480px] bg-[var(--color-surface-0)] border-l border-[var(--color-surface-200)] overflow-y-auto shadow-2xl animate-slide-in-right flex flex-col">
+            <div className="p-5 flex-1">
               {/* Header */}
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between mb-6">
                 <div>
-                  <span className={cn('badge mb-2', SEVERITY_STYLES[selected.severity].bg)}>
-                    <span className={cn('w-1.5 h-1.5 rounded-full', SEVERITY_STYLES[selected.severity].dot)} />
-                    {selected.severity}
-                  </span>
-                  <h2 className="text-xl font-bold text-[var(--color-surface-900)] mt-2">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: SEVERITY_STYLES[selected.severity].dot }} />
+                    <span className="text-[11px] font-bold uppercase tracking-widest text-[var(--color-surface-500)]">
+                      {selected.severity} Severity
+                    </span>
+                  </div>
+                  <h2 className="text-[20px] font-bold tracking-tight text-[var(--color-surface-900)] leading-tight">
                     {TYPE_LABELS[selected.type] || selected.type}
                   </h2>
-                  <p className="text-sm text-[var(--color-surface-500)] mt-1 font-mono">{selected.reference}</p>
+                  <p className="text-mono text-[var(--color-surface-500)] mt-1.5 bg-[var(--color-surface-100)] px-2 py-1 inline-block rounded-md">{selected.reference}</p>
                 </div>
-                <button onClick={() => setSelectedId(null)} className="p-2 rounded-lg hover:bg-[var(--color-surface-200)] transition-colors">
-                  <X className="w-5 h-5 text-[var(--color-surface-500)]" />
+                <button onClick={() => setSelectedId(null)} className="p-2 rounded-full text-[var(--color-surface-400)] hover:text-[var(--color-surface-900)] hover:bg-[var(--color-surface-100)] transition-all cursor-pointer">
+                  <X className="w-5 h-5" strokeWidth={2.5} />
                 </button>
               </div>
 
-              {/* Details Grid */}
-              <div className="grid grid-cols-2 gap-4">
+              {/* Details */}
+              <div className="grid grid-cols-2 gap-y-5 gap-x-6 mb-8">
                 {[
-                  { label: 'Amount', value: formatCurrency(selected.amount) },
+                  { label: 'Amount', value: formatCurrency(selected.amount), isCurrency: true },
                   { label: 'Currency', value: selected.currency },
                   { label: 'PSP', value: selected.psp },
                   { label: 'Status', value: selected.status },
                   { label: 'Beneficiary', value: selected.beneficiaryName },
                   { label: 'Age', value: `${selected.ageHours} hours` },
                 ].map(item => (
-                  <div key={item.label} className="bg-[var(--color-surface-100)] rounded-lg p-3">
-                    <p className="text-xs text-[var(--color-surface-500)]">{item.label}</p>
-                    <p className="text-sm font-medium text-[var(--color-surface-800)] mt-0.5 capitalize">{item.value}</p>
+                  <div key={item.label} className="flex flex-col">
+                    <span className="text-overline mb-1">{item.label}</span>
+                    <div className={cn("text-[14px] font-medium capitalize text-[var(--color-surface-800)]", item.isCurrency && "text-[16px] font-bold text-[var(--color-surface-900)]")}>
+                      {item.label === 'PSP' ? (
+                        <span className="flex items-center gap-2">
+                          <PSPLogo name={selected.psp} iconOnly className="w-4 h-4 shrink-0 drop-shadow-sm" />
+                          {selected.psp}
+                        </span>
+                      ) : item.value}
+                    </div>
                   </div>
                 ))}
               </div>
 
-              {/* Timeline */}
+              {/* Timeline (Linear minimalist style) */}
               <div>
-                <h3 className="text-sm font-medium text-[var(--color-surface-700)] mb-3">Timeline</h3>
-                <div className="space-y-3">
+                <h3 className="text-overline mb-4">Audit Timeline</h3>
+                <div className="space-y-0 relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-[2px] before:bg-gradient-to-b before:from-[var(--color-surface-200)] before:to-transparent">
                   {[
-                    { label: 'Created', time: selected.createdAt, icon: AlertCircle, done: true },
-                    { label: 'Investigating', time: selected.status !== 'open' ? selected.createdAt : null, icon: Clock, done: selected.status !== 'open' },
-                    { label: 'Resolved', time: selected.status === 'resolved' ? selected.createdAt : null, icon: CheckCircle2, done: selected.status === 'resolved' },
+                    { label: 'Created & Logged', time: selected.createdAt, done: true },
+                    { label: 'Under Investigation', time: selected.status !== 'open' ? selected.createdAt : null, done: selected.status !== 'open' },
+                    { label: 'Resolved & Closed', time: selected.status === 'resolved' ? selected.createdAt : null, done: selected.status === 'resolved' },
                   ].map((step, i) => (
-                    <div key={i} className="flex items-center gap-3">
+                    <div key={i} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active py-3">
                       <div className={cn(
-                        'w-8 h-8 rounded-full flex items-center justify-center',
-                        step.done ? 'bg-[var(--color-primary-500)]/20 text-[var(--color-primary-400)]' : 'bg-[var(--color-surface-200)] text-[var(--color-surface-400)]'
+                        'flex items-center justify-center w-6 h-6 rounded-full border-2 bg-[var(--color-surface-0)] shrink-0 z-10 shadow-sm',
+                        step.done ? 'border-[var(--color-primary-500)] text-[var(--color-primary-500)]' : 'border-[var(--color-surface-200)] text-transparent'
                       )}>
-                        <step.icon className="w-4 h-4" />
+                        {step.done && <div className="w-2 h-2 rounded-full bg-[var(--color-primary-500)]" />}
                       </div>
-                      <div>
-                        <p className={cn('text-sm font-medium', step.done ? 'text-[var(--color-surface-800)]' : 'text-[var(--color-surface-400)]')}>
+                      <div className="w-[calc(100%-3rem)] ml-4">
+                        <p className={cn('text-[13px] font-bold', step.done ? 'text-[var(--color-surface-900)]' : 'text-[var(--color-surface-400)]')}>
                           {step.label}
                         </p>
                         {step.time && (
-                          <p className="text-xs text-[var(--color-surface-500)]">{getRelativeTime(step.time)}</p>
+                          <p className="text-[12px] font-medium text-[var(--color-surface-500)] mt-0.5">{getRelativeTime(step.time)}</p>
                         )}
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
-
-              {/* Resolution Form */}
-              {selected.status !== 'resolved' && (
-                <div className="border-t border-[var(--color-surface-200)] pt-4">
-                  <h3 className="text-sm font-medium text-[var(--color-surface-700)] mb-2">Resolve Discrepancy</h3>
-                  <textarea
-                    value={resolveNote}
-                    onChange={e => setResolveNote(e.target.value)}
-                    placeholder="Add resolution notes..."
-                    className="w-full px-3 py-2 rounded-lg bg-[var(--color-surface-100)] border border-[var(--color-surface-200)] text-sm text-[var(--color-surface-700)] placeholder:text-[var(--color-surface-400)] focus:outline-none focus:ring-2 focus:ring-[var(--color-primary-500)]/40 resize-none h-24"
-                  />
-                  <button
-                    onClick={async () => {
-                      if (selected) {
-                        const numericId = parseInt(selected.id.replace('DIS-', ''), 10);
-                        const success = await resolve(numericId, resolveNote);
-                        if (success || isUsingDemoData) {
-                          setSelectedId(null);
-                          setResolveNote('');
-                        }
-                      }
-                    }}
-                    disabled={isResolving}
-                    className="mt-3 w-full py-2 rounded-lg bg-[var(--color-success-600)] text-white text-sm font-medium hover:bg-[var(--color-success-500)] transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {isResolving ? (
-                      <><Loader2 className="w-4 h-4 animate-spin" /> Resolving...</>
-                    ) : (
-                      <><CheckCircle2 className="w-4 h-4 inline-block" /> Mark as Resolved</>
-                    )}
-                  </button>
-                </div>
-              )}
             </div>
+
+            {/* Resolution Form */}
+            {selected.status !== 'resolved' && (
+              <div className="border-t border-[var(--color-surface-200)] p-5 bg-[var(--color-surface-50)]">
+                <h3 className="text-[14px] font-semibold text-[var(--color-surface-900)] mb-3">Resolve Discrepancy</h3>
+                <textarea
+                  value={resolveNote}
+                  onChange={e => setResolveNote(e.target.value)}
+                  placeholder="Enter final audit notes and reconciliation reference..."
+                  className="w-full px-3 py-2.5 rounded-md bg-[var(--color-surface-0)] border border-[var(--color-surface-200)] text-[13px] text-[var(--color-surface-900)] placeholder:text-[var(--color-surface-400)] focus:outline-none focus:border-[var(--color-primary-500)] focus:ring-2 focus:ring-[var(--color-primary-500)]/10 transition-all resize-none h-24 mb-3"
+                />
+                <button
+                  onClick={async () => {
+                    if (selected) {
+                      const numericId = parseInt(selected.id.replace('DIS-', ''), 10);
+                      const success = await resolve(numericId, resolveNote);
+                      if (success || isUsingDemoData) {
+                        setSelectedId(null);
+                        setResolveNote('');
+                      }
+                    }
+                  }}
+                  disabled={isResolving}
+                  className="btn btn-primary w-full"
+                >
+                  {isResolving ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Resolving...</>
+                  ) : (
+                    <><CheckCircle2 className="w-4 h-4" strokeWidth={2.5} /> Mark as Resolved</>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

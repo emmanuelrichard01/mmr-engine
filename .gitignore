@@ -59,3 +59,14 @@ dashboard/build/
 dashboard/next-env.d.ts
 dashboard/.env*.local
 dashboard/*.tsbuildinfo
+
+# ── Generated Data (regenerable via `make demo-data`) ─────────────────────────
+scripts/demo_data/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── AI Agent Artifacts ────────────────────────────────────────────────────────
+analysis_results.md
+.gemini/

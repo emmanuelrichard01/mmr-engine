@@ -122,8 +122,14 @@ class KafkaConsumer:
 
     def commit(self) -> None:
         """Commit current offsets. Called after successful batch processing."""
-        self._consumer.commit(asynchronous=False)
-        log.debug("kafka.offsets_committed")
+        try:
+            self._consumer.commit(asynchronous=False)
+            log.debug("kafka.offsets_committed")
+        except KafkaException as e:
+            if e.args[0].code() == KafkaError._NO_OFFSET:
+                log.debug("kafka.offsets_committed.no_offset")
+            else:
+                raise
 
     def close(self) -> None:
         """Close consumer connection and leave consumer group."""

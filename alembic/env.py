@@ -2,10 +2,13 @@
 """
 Alembic environment configuration.
 
-Reads database DSN from src.config.Settings rather than alembic.ini
-to ensure single-source-of-truth for database connection strings.
+Reads database DSN from ALEMBIC_DATABASE_URL (superuser, for DDL/GRANT ops),
+falling back to the pipeline DSN from src.config.Settings.
+
+Migrations require superuser for: CREATE EXTENSION, GRANT, CREATE TABLE.
 """
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -21,9 +24,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Set sqlalchemy.url from application config
+# Set sqlalchemy.url — prefer ALEMBIC_DATABASE_URL (superuser) over pipeline DSN
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", str(settings.postgres_pipeline_dsn))
+alembic_url = os.environ.get("ALEMBIC_DATABASE_URL") or str(settings.postgres_pipeline_dsn)
+config.set_main_option("sqlalchemy.url", alembic_url)
 
 
 def run_migrations_offline() -> None:

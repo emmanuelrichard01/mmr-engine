@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Stepper } from '@/components/stepper';
+import { PSPLogo } from '@/components/psp-logos';
 import { cn } from '@/lib/utils';
 import {
   Building2,
@@ -250,6 +251,20 @@ export default function OnboardingPage() {
 
   return (
     <div className="w-full max-w-2xl mx-auto space-y-8">
+      {/* Welcome header */}
+      <div className="text-center animate-fade-in">
+        <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 mb-4 shadow-lg shadow-indigo-500/20">
+          <Zap className="w-6 h-6 text-white" />
+        </div>
+        <h1 className="text-xl font-bold text-[var(--color-surface-900)]">
+          Set Up Your Reconciliation Engine
+        </h1>
+        <p className="text-sm text-[var(--color-surface-500)] mt-1.5 max-w-md mx-auto">
+          Automatically match transactions across Paystack, Flutterwave, and M-Pesa.
+          This takes about 2 minutes.
+        </p>
+      </div>
+
       {/* Stepper */}
       <Stepper steps={STEPS} currentStep={currentStep} />
 
@@ -339,6 +354,14 @@ export default function OnboardingPage() {
                 <>Continue <ArrowRight className="w-4 h-4" /></>
               )}
             </button>
+
+            {/* Skip to Demo */}
+            <button
+              onClick={() => router.push('/')}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium text-[var(--color-surface-500)] hover:text-[var(--color-surface-700)] hover:bg-[var(--color-surface-100)] transition-colors"
+            >
+              Skip to demo — explore with sample data
+            </button>
           </div>
         )}
 
@@ -371,7 +394,7 @@ export default function OnboardingPage() {
                 >
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2.5">
-                      <span className="text-xl">{psp.icon}</span>
+                      <PSPLogo name={psp.name} iconOnly className="w-5 h-5 shrink-0" />
                       <span className="font-medium text-[var(--color-surface-800)]">
                         {psp.displayName}
                       </span>

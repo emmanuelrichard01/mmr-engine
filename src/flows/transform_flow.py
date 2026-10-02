@@ -96,7 +96,9 @@ async def write_bronze_parquet(
                 VALUES
                     (:psp_name, :source_type, :topic, :partition,
                      :offset, :hash, :path, 1, :run_id, 'written')
-                RETURNING id
+                ON CONFLICT (kafka_topic, kafka_partition, kafka_offset)
+                DO UPDATE SET status = EXCLUDED.status
+                RETURNING id, file_path
             """),
             {
                 "psp_name": psp_name,
@@ -109,10 +111,12 @@ async def write_bronze_parquet(
                 "run_id": run_id,
             },
         )
-        bronze_ingestion_id = result.scalar_one()
+        row = result.one()
+        bronze_ingestion_id = row[0]
+        actual_file_path = row[1]
 
-    logger.info(f"Bronze written: {file_path} (ingestion_id={bronze_ingestion_id})")
-    return file_path, bronze_ingestion_id
+    logger.info(f"Bronze written: {actual_file_path} (ingestion_id={bronze_ingestion_id})")
+    return actual_file_path, bronze_ingestion_id
 
 
 @task(
@@ -229,7 +233,7 @@ async def normalise_to_silver(
                      :beneficiary_account_masked, :beneficiary_bank_code,
                      :beneficiary_bank_name, :beneficiary_name_masked,
                      :narration, :initiated_at, :settled_at, :expected_settlement_at,
-                     :settlement_status, :has_pii_masked, :psp_metadata::jsonb,
+                     :settlement_status, :has_pii_masked, CAST(:psp_metadata AS JSONB),
                      :processed_by_run_id)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING id
@@ -269,28 +273,69 @@ async def bronze_to_silver_flow(kafka_message: dict[str, Any]) -> dict:
     event_type = kafka_message["event_type"]
     payload = kafka_message["payload"]
 
-    # Step 1: Write Bronze Parquet
-    file_path, bronze_ingestion_id = await write_bronze_parquet(
-        psp_name=psp_name,
-        kafka_message=kafka_message,
-        run_id=run_id,
-    )
+    # Register start of pipeline run
+    async with pipeline_session() as session:
+        await session.execute(
+            text("""
+                INSERT INTO system_pipeline_runs (id, flow_name, status, triggered_by)
+                VALUES (:id, :flow_name, 'running', 'consumer_worker')
+            """),
+            {"id": run_id, "flow_name": "bronze-to-silver-flow"}
+        )
 
-    # Step 2: Normalise to Silver
-    silver_id = await normalise_to_silver(
-        psp_name=psp_name,
-        payload=payload,
-        event_type=event_type,
-        bronze_ingestion_id=bronze_ingestion_id,
-        run_id=run_id,
-    )
+    try:
+        # Step 1: Write Bronze Parquet
+        file_path, bronze_ingestion_id = await write_bronze_parquet(
+            psp_name=psp_name,
+            kafka_message=kafka_message,
+            run_id=run_id,
+        )
 
-    return {
-        "run_id": str(run_id),
-        "bronze_ingestion_id": str(bronze_ingestion_id),
-        "silver_transaction_id": str(silver_id),
-        "psp_name": psp_name,
-    }
+        # Step 2: Normalise to Silver
+        silver_id = await normalise_to_silver(
+            psp_name=psp_name,
+            payload=payload,
+            event_type=event_type,
+            bronze_ingestion_id=bronze_ingestion_id,
+            run_id=run_id,
+        )
+
+        # Register successful completion of pipeline run
+        async with pipeline_session() as session:
+            await session.execute(
+                text("""
+                    UPDATE system_pipeline_runs
+                    SET status = 'completed', completed_at = NOW(), records_processed = 1
+                    WHERE id = :id
+                """),
+                {"id": run_id}
+            )
+
+        return {
+            "run_id": str(run_id),
+            "bronze_ingestion_id": str(bronze_ingestion_id),
+            "silver_transaction_id": str(silver_id),
+            "psp_name": psp_name,
+        }
+
+    except Exception as e:
+        import traceback
+        # Register failed pipeline run
+        async with pipeline_session() as session:
+            await session.execute(
+                text("""
+                    UPDATE system_pipeline_runs
+                    SET status = 'failed', completed_at = NOW(), records_failed = 1,
+                        error_message = :err, error_traceback = :tb
+                    WHERE id = :id
+                """),
+                {
+                    "id": run_id,
+                    "err": str(e),
+                    "tb": traceback.format_exc()
+                }
+            )
+        raise
 
 
 def _extract_initiated_at(psp_name: str, payload: dict) -> datetime:

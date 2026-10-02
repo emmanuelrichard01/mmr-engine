@@ -229,7 +229,7 @@ class SlackAlertDispatcher:
                             (alert_type, severity, channel, payload, delivered_at)
                         VALUES
                             (:alert_type, :severity, :channel,
-                             :payload::jsonb,
+                             CAST(:payload AS JSONB),
                              CASE WHEN :delivered THEN NOW() ELSE NULL END)
                     """),
                     {

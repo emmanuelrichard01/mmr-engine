@@ -39,3 +39,29 @@ GRANT CONNECT ON DATABASE reconciliation TO reconciliation_pipeline;
 GRANT CONNECT ON DATABASE reconciliation TO reconciliation_api_user;
 GRANT CONNECT ON DATABASE reconciliation TO reconciliation_readonly;
 GRANT CONNECT ON DATABASE reconciliation TO reconciliation_dbt;
+
+-- ── Schema Permissions ──────────────────────────────────────────────────────
+-- PostgreSQL 15+ revokes default CREATE on the public schema.
+-- Pipeline needs CREATE to run Alembic migrations; others need USAGE to query.
+GRANT CREATE, USAGE ON SCHEMA public TO reconciliation_pipeline;
+GRANT USAGE ON SCHEMA public TO reconciliation_api_user;
+GRANT USAGE ON SCHEMA public TO reconciliation_readonly;
+GRANT USAGE ON SCHEMA public TO reconciliation_dbt;
+
+-- Grant default table permissions so future tables are accessible
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE ON TABLES TO reconciliation_pipeline;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, UPDATE ON TABLES TO reconciliation_api_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT ON TABLES TO reconciliation_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE ON TABLES TO reconciliation_dbt;
+
+-- Grant sequence usage (required for serial/identity columns)
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE ON SEQUENCES TO reconciliation_pipeline;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE ON SEQUENCES TO reconciliation_api_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE ON SEQUENCES TO reconciliation_dbt;

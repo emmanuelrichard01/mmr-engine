@@ -41,7 +41,11 @@ def upgrade() -> None:
             ) AS open_exposure_ngn,
             ROUND(AVG(rp.settlement_lag_actual_minutes), 2) AS avg_settlement_lag_minutes,
             COUNT(DISTINCT ct.id)
-                FILTER (WHERE ct.settlement_sla_breached = TRUE) AS sla_breach_count,
+                FILTER (WHERE 
+                    (ct.settled_at IS NOT NULL AND ct.expected_settlement_at IS NOT NULL AND ct.settled_at > ct.expected_settlement_at)
+                    OR
+                    (ct.settled_at IS NULL AND ct.expected_settlement_at IS NOT NULL AND NOW() > ct.expected_settlement_at)
+                ) AS sla_breach_count,
             NOW() AS last_refreshed_at
         FROM silver_canonical_transactions ct
         LEFT JOIN gold_reconciliation_pairs rp ON ct.id = rp.transaction_a_id

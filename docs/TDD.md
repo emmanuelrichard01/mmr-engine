@@ -61,7 +61,7 @@ CI                      GitHub Actions           —           Lint, test, build
 ## 3. Repository Structure
 
 ```
-reconciliation-engine/
+mmr-engine/
 │
 ├── .github/
 │   └── workflows/

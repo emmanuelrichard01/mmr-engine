@@ -187,7 +187,17 @@ make dashboard          # Start dashboard dev server (http://localhost:3000)
 make dashboard-build    # Production build
 ```
 
-**7 screens:** Executive Overview · Discrepancy Management · PSP Health · CBN Reports · Settings · Onboarding Wizard · Demo Mode (graceful fallback)
+**7 screens + guided tour:** Executive Overview · Discrepancy Management · PSP Health · CBN Reports · Settings · Onboarding Wizard · Interactive Walkthrough Tour · Demo Mode (graceful fallback)
+
+## Operations
+
+```bash
+make status             # Container status + DB table counts
+make logs-errors        # Show only error logs from all services
+make rebuild            # Rebuild + restart (preserves data)
+make clean-data         # Remove generated demo data files
+make smoke              # Health check against running stack
+```
 
 ---
 
@@ -220,12 +230,12 @@ mmr-engine/
 │   ├── storage/                # PostgreSQL, MinIO, Kafka clients
 │   ├── observability/          # Prometheus metrics + structlog
 │   └── config.py               # Pydantic Settings — all env vars typed
-├── alembic/versions/           # 13 database migrations
+├── alembic/versions/           # 15 database migrations (000-014)
 ├── dbt_project/                # Silver → Gold SQL transforms
 ├── dashboard/                  # Next.js 15 executive dashboard (30+ files)
 │   ├── app/(dashboard)/        #   6 dashboard pages
 │   ├── app/onboarding/         #   4-step onboarding wizard
-│   ├── components/             #   Sidebar, KPI cards, charts, stepper, demo banner
+│   ├── components/             #   Sidebar, KPI cards, charts, stepper, walkthrough tour, page help
 │   └── lib/                    #   API client, data hooks, demo data, utilities
 ├── tests/                      # 160+ tests across 9 suites
 │   ├── unit/                   #   Matching, discrepancy, PII, FX, CBN, connectors
@@ -298,7 +308,7 @@ mmr-engine/
 
 ## Documentation
 
-11 specification documents (530KB+ of pre-engineering design):
+12 specification documents (600KB+ of pre-engineering design + operational guides):
 
 | Document | Purpose |
 |----------|---------|
@@ -313,6 +323,7 @@ mmr-engine/
 | [CDA](docs/CDA.md) | Credential & Deployment Architecture — 3 deployment models, migration paths |
 | [Threat Assessment](docs/RELEVANCE%20AND%20THREAT%20ASSESSMENT.md) | Competitive landscape, differentiation |
 | [GTM Strategy](docs/GTM_STRATEGY.md) | Data acquisition, commercial positioning |
+| [Operations Guide](docs/OPERATIONS.md) | Dashboard pages, demo mode, scripts, troubleshooting |
 
 ---
 

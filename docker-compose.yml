@@ -106,7 +106,7 @@ services:
     networks:
       - rec_internal
 
-  # ── MinIO Init (creates buckets and applies Object Lock) ──────────────────
+  # ── MinIO Init (creates buckets) ────────────────────────────────────────────
   minio_init:
     image: minio/mc:latest
     container_name: rec_minio_init
@@ -117,12 +117,30 @@ services:
       /bin/sh -c "
         mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
         mc mb --ignore-existing local/reconciliation-bronze &&
-        mc retention set --default COMPLIANCE 7d local/reconciliation-bronze &&
         echo 'MinIO initialised successfully'
       "
     environment:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+    networks:
+      - rec_internal
+
+  # ── Redpanda Init (pre-creates Kafka topics) ────────────────────────────────
+  redpanda_init:
+    image: redpandadata/redpanda:v24.2.18
+    container_name: rec_redpanda_init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        rpk topic create raw.paystack.events   --brokers redpanda:9092 -p 3 2>/dev/null;
+        rpk topic create raw.flutterwave.events --brokers redpanda:9092 -p 3 2>/dev/null;
+        rpk topic create raw.mpesa.events       --brokers redpanda:9092 -p 3 2>/dev/null;
+        rpk topic create raw.polling.fallback   --brokers redpanda:9092 -p 1 2>/dev/null;
+        rpk topic create dead.letter.queue      --brokers redpanda:9092 -p 1 2>/dev/null;
+        echo 'Kafka topics initialised'
+      "
     networks:
       - rec_internal
 
@@ -147,6 +165,7 @@ services:
       - FLUTTERWAVE_SECRET_KEY=${FLUTTERWAVE_SECRET_KEY}
       - FLUTTERWAVE_SECRET_HASH=${FLUTTERWAVE_SECRET_HASH}
       - FX_PROVIDER_API_KEY=${FX_PROVIDER_API_KEY}
+      - PREFECT_API_URL=http://prefect_server:4200/api
     ports:
       - "8000:8000"
     depends_on:
@@ -158,8 +177,10 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
       timeout: 5s
-      retries: 3
-      start_period: 20s
+      retries: 5
+      start_period: 45s
+    volumes:
+      - ./src:/app/src
     networks:
       - rec_internal
 
@@ -172,11 +193,18 @@ services:
     environment:
       PREFECT_SERVER_API_HOST: 0.0.0.0
       PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://postgres:${POSTGRES_SUPERUSER_PASSWORD}@postgres:5432/prefect
+      PREFECT_UI_API_URL: http://localhost:4200/api
     ports:
       - "4200:4200"
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\" 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - rec_internal
 
@@ -205,7 +233,7 @@ services:
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
     depends_on:
       prefect_server:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redpanda:
@@ -213,8 +241,47 @@ services:
       minio:
         condition: service_healthy
     volumes:
+      - ./src:/app/src
       - ./dbt_project:/app/dbt_project
       - duckdb_data:/data/analytics
+    networks:
+      - rec_internal
+
+  # ── Consumer Worker (runs Kafka consumer) ───────────────────────────────────
+  consumer_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    container_name: rec_consumer_worker
+    restart: unless-stopped
+    command: python src/flows/consumer_worker.py
+    environment:
+      - POSTGRES_PIPELINE_DSN=${POSTGRES_PIPELINE_DSN}
+      - POSTGRES_API_DSN=${POSTGRES_API_DSN}
+      - POSTGRES_READONLY_DSN=${POSTGRES_READONLY_DSN}
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - FX_PROVIDER_API_KEY=${FX_PROVIDER_API_KEY}
+      - PAYSTACK_SECRET_KEY=${PAYSTACK_SECRET_KEY}
+      - FLUTTERWAVE_SECRET_KEY=${FLUTTERWAVE_SECRET_KEY}
+      - FLUTTERWAVE_SECRET_HASH=${FLUTTERWAVE_SECRET_HASH}
+      - PREFECT_API_URL=http://prefect_server:4200/api
+    depends_on:
+      prefect_server:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      redpanda_init:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
     networks:
       - rec_internal
 
@@ -227,6 +294,8 @@ services:
     container_name: rec_migrations
     command: alembic upgrade head
     environment:
+      # Migrations run as superuser — required for CREATE EXTENSION, GRANT, DDL
+      ALEMBIC_DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_SUPERUSER_PASSWORD}@postgres:5432/reconciliation
       POSTGRES_PIPELINE_DSN: ${POSTGRES_PIPELINE_DSN}
       POSTGRES_API_DSN: ${POSTGRES_API_DSN}
       POSTGRES_READONLY_DSN: ${POSTGRES_READONLY_DSN}

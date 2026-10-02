@@ -234,6 +234,29 @@ make demo-data-week
 
 ---
 
+## API Authentication
+
+### Development Mode (default)
+
+When `ENVIRONMENT=development` in `.env`, the API allows **unauthenticated access** to all endpoints. This enables the Next.js dashboard to connect without needing a pre-provisioned API key.
+
+The following paths are **always public** regardless of environment:
+- `/health`, `/health/ready`, `/metrics` — operational endpoints
+- `/v1/webhooks/*` — PSP webhook ingestion (uses HMAC validation instead)
+- `/v1/onboarding/*` — onboarding wizard (pre-auth by design)
+- `OPTIONS` requests — CORS preflight (never requires auth)
+
+### Production Mode
+
+Set `ENVIRONMENT=production` in `.env` to enforce API key authentication on all protected routes. Pass the key via `X-API-Key` header:
+```bash
+curl -H "X-API-Key: reck_your_key_here" http://localhost:8000/v1/reconciliation/summary
+```
+
+API keys are SHA-256 hashed at rest. See `API SPECIFICATION.md` §2.1 for full details.
+
+---
+
 ## Troubleshooting
 
 ### Dashboard shows "Demo Mode" when API is running
@@ -265,6 +288,44 @@ make demo-data-week
 **Cause**: HMAC signature doesn't match.
 
 **Fix**: Ensure `PAYSTACK_SECRET_KEY` in `.env` matches the key used to sign webhooks.
+
+### Windows Console/Terminal shows garbled characters or emojis fail to print
+
+**Cause**: Python on Windows uses the system's active code page (e.g. CP1252) by default, which does not support UTF-8 emojis or logs.
+
+**Fix**: Set the environment variable `PYTHONIOENCODING=utf-8` before running python scripts on Windows:
+```powershell
+$env:PYTHONIOENCODING="utf-8"
+python scripts/replay_demo_data.py
+```
+
+### Rate limiting is blocking webhook ingestion or replay simulator
+
+**Cause**: Webhook endpoints (e.g., `/v1/webhooks/*`) receive high-volume streams, which can exceed standard API client rate limits.
+
+**Fix**: The rate limiting middleware has been refined to explicitly bypass rate limiting for paths starting with `/v1/webhooks` so that ingestion pipelines are never throttled. Make sure the endpoints are accessed without authorization headers or using valid PSP signatures.
+
+### FX rate capture returns 404 errors
+
+**Cause**: `FX_PROVIDER_API_KEY` in `.env` is still set to the placeholder `your_exchangerate_api_key`.
+
+**Fix**: Get a free API key from [exchangerate-api.com](https://www.exchangerate-api.com/) (2,000 requests/month free tier). Update `.env`:
+```
+FX_PROVIDER_API_KEY=your_real_key_here
+```
+**Note**: This only affects cross-border (non-NGN) transactions. NGN-to-NGN reconciliation works without an FX key.
+
+### Prefect worker shows "Service exceeded error threshold"
+
+**Cause**: The Prefect worker started before the Prefect server was fully ready to accept connections.
+
+**Fix**: The `docker-compose.yml` now uses `service_healthy` (not `service_started`) for the `prefect_server` dependency, with a proper healthcheck. Restart with `make down && make up`.
+
+### MinIO init fails with "Object Lock cannot be enabled on existing buckets"
+
+**Cause**: Object Lock can only be enabled at bucket creation time. If the bucket already exists, the retention command fails.
+
+**Fix**: This is now handled — the `minio_init` service only creates the bucket without attempting to set retention on existing buckets. If you need Object Lock, delete the MinIO volume first: `docker volume rm reconciliation-engine_minio_data`.
 
 ---
 

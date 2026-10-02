@@ -28,10 +28,15 @@ import argparse
 import json
 import os
 import random
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+
+# Configure stdout for UTF-8 encoding (especially on Windows)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
