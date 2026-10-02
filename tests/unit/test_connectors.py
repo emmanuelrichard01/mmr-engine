@@ -13,16 +13,17 @@ References:
     - TDD §8.2: Paystack Connector
     - TDD §8.3: Flutterwave Connector
 """
+
 import hashlib
 import hmac
 import json
 from unittest.mock import patch
 
-import pytest
+from pydantic import SecretStr
 
-from src.connectors.paystack import PaystackConnector, HANDLED_EVENT_TYPES as PS_EVENTS
-from src.connectors.flutterwave import FlutterwaveConnector, HANDLED_EVENT_TYPES as FLW_EVENTS
 from src.connectors.base import RawWebhookEvent
+from src.connectors.flutterwave import FlutterwaveConnector
+from src.connectors.paystack import PaystackConnector
 
 
 class TestPaystackConnector:
@@ -38,7 +39,7 @@ class TestPaystackConnector:
     @patch("src.connectors.paystack.get_settings")
     def test_valid_signature(self, mock_settings):
         """Valid HMAC-SHA512 signature should return True."""
-        mock_settings.return_value.paystack_secret_key = self.secret_key
+        mock_settings.return_value.paystack_secret_key = SecretStr(self.secret_key)
         body = b'{"event": "charge.success", "data": {}}'
 
         expected_sig = hmac.new(
@@ -52,7 +53,7 @@ class TestPaystackConnector:
     @patch("src.connectors.paystack.get_settings")
     def test_invalid_signature(self, mock_settings):
         """Invalid signature should return False."""
-        mock_settings.return_value.paystack_secret_key = self.secret_key
+        mock_settings.return_value.paystack_secret_key = SecretStr(self.secret_key)
         body = b'{"event": "charge.success", "data": {}}'
 
         assert self.connector.validate_signature(body, "bad_signature") is False
@@ -60,7 +61,7 @@ class TestPaystackConnector:
     @patch("src.connectors.paystack.get_settings")
     def test_tampered_body(self, mock_settings):
         """Signature computed on original body should fail on tampered body."""
-        mock_settings.return_value.paystack_secret_key = self.secret_key
+        mock_settings.return_value.paystack_secret_key = SecretStr(self.secret_key)
         original_body = b'{"event": "charge.success", "data": {}}'
         tampered_body = b'{"event": "charge.success", "data": {"amount": 999}}'
 
@@ -123,7 +124,7 @@ class TestFlutterwaveConnector:
     @patch("src.connectors.flutterwave.get_settings")
     def test_valid_signature(self, mock_settings):
         """Matching secret hash should return True."""
-        mock_settings.return_value.flutterwave_secret_hash = self.secret_hash
+        mock_settings.return_value.flutterwave_secret_hash = SecretStr(self.secret_hash)
         body = b'{"event": "charge.completed"}'
 
         assert self.connector.validate_signature(body, self.secret_hash) is True
@@ -131,7 +132,7 @@ class TestFlutterwaveConnector:
     @patch("src.connectors.flutterwave.get_settings")
     def test_invalid_signature(self, mock_settings):
         """Non-matching hash should return False."""
-        mock_settings.return_value.flutterwave_secret_hash = self.secret_hash
+        mock_settings.return_value.flutterwave_secret_hash = SecretStr(self.secret_hash)
         body = b'{"event": "charge.completed"}'
 
         assert self.connector.validate_signature(body, "wrong_hash") is False
@@ -150,3 +151,36 @@ class TestFlutterwaveConnector:
     def test_extract_transaction_ref(self):
         payload = {"data": {"tx_ref": "FLW-TXN-99887"}}
         assert self.connector.extract_transaction_ref(payload) == "FLW-TXN-99887"
+
+
+class TestSignatureEdgeCases:
+    """Regression tests: inputs that previously crashed or wrongly passed."""
+
+    @patch("src.connectors.flutterwave.get_settings")
+    def test_flutterwave_empty_secret_never_validates(self, mock_settings):
+        # compare_digest("", "") is True: an empty configured hash must not
+        # turn a missing header into a valid signature.
+        mock_settings.return_value.flutterwave_secret_hash = SecretStr("")
+        assert FlutterwaveConnector().validate_signature(b"{}", "") is False
+
+    @patch("src.connectors.flutterwave.get_settings")
+    def test_flutterwave_missing_header(self, mock_settings):
+        mock_settings.return_value.flutterwave_secret_hash = SecretStr("configured")
+        assert FlutterwaveConnector().validate_signature(b"{}", "") is False
+
+    @patch("src.connectors.paystack.get_settings")
+    def test_paystack_missing_header(self, mock_settings):
+        mock_settings.return_value.paystack_secret_key = SecretStr("sk_test_x")
+        assert PaystackConnector().validate_signature(b"{}", "") is False
+
+    @patch("src.connectors.paystack.get_settings")
+    def test_paystack_non_ascii_header_is_rejected_not_raised(self, mock_settings):
+        # hmac.compare_digest raises TypeError for non-ASCII str inputs.
+        mock_settings.return_value.paystack_secret_key = SecretStr("sk_test_x")
+        assert PaystackConnector().validate_signature(b"{}", "sigé") is False
+
+    @patch("src.connectors.paystack.get_settings")
+    def test_paystack_uppercase_hex_signature_accepted(self, mock_settings):
+        mock_settings.return_value.paystack_secret_key = SecretStr("sk_test_x")
+        sig = hmac.new(b"sk_test_x", b"{}", hashlib.sha512).hexdigest().upper()
+        assert PaystackConnector().validate_signature(b"{}", sig) is True

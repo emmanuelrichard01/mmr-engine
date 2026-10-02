@@ -1,267 +1,207 @@
 # tests/unit/test_normaliser.py
 """
-Unit tests for Silver normaliser.
-
-Tests verify:
-    1. Paystack kobo → NGN conversion (divide by 100)
-    2. Flutterwave major unit passthrough
-    3. PII masking applied to all sensitive fields
-    4. Idempotency key format in output
-    5. Settlement status mapping per event type
-    6. has_pii_masked always True
-
-References:
-    - TDD §9.4: Silver Normaliser
+Silver normaliser tests: amount conventions, event classification, PII
+handling, and the regressions fixed in the credibility cleanup.
 """
-from datetime import datetime, timezone
+
+import copy
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
 from src.engine.normaliser import (
-    normalise_paystack_event,
+    PermanentEventError,
+    classify_event,
     normalise_flutterwave_event,
-    _parse_timestamp,
+    normalise_paystack_event,
+    parse_timestamp,
 )
+from src.engine.pii import tokenize_name
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
-PAYSTACK_CHARGE_SUCCESS = {
-    "event": "charge.success",
-    "data": {
-        "id": 123456,
-        "reference": "T_abc123xyz",
-        "amount": 5000000,          # 50,000 NGN in kobo
-        "currency": "NGN",
-        "status": "success",
-        "paid_at": "2026-05-01T08:12:00.000Z",
-        "channel": "card",
-        "fees": 145000,             # 1,450 NGN in kobo
-        "authorization": {
-            "account_number": "0123456789",
-            "account_name": "Chioma Okonkwo",
-            "bank_code": "057",
-            "bank": "Zenith Bank",
-        },
-        "customer": {
-            "email": "chioma@example.com"    # PII — must never appear in Silver
-        },
-        "metadata": {
-            "custom_fields": [{"value": "Monthly subscription"}]
-        },
-    },
-}
-
-FLUTTERWAVE_CHARGE_COMPLETED = {
-    "event": "charge.completed",
-    "data": {
-        "id": 789012,
-        "tx_ref": "FLW-TXN-99887",
-        "flw_ref": "FLW-MOCK-abc123",
-        "amount": 50000,            # 50,000 NGN (major units)
-        "currency": "NGN",
-        "status": "successful",
-        "created_at": "2026-05-01T08:12:00.000Z",
-        "customer": {
-            "name": "Ade Johnson",
-            "email": "ade@example.com"
-        },
-        "account": {
-            "account_number": "9876543210",
-            "account_name": "ADE JOHNSON",
-            "bank_code": "058",
-            "bank": "GTBank",
-        },
-        "app_fee": 200,
-        "merchant_fee": 1250,
-        "narration": "Payment for order #1234",
-    },
-}
+def _ps(payload, **kw):
+    return normalise_paystack_event(
+        payload=payload,
+        bronze_ingestion_id=uuid4(),
+        run_id=uuid4(),
+        fx_rate_snapshot_id=kw.get("fx_id"),
+        fx_rate_applied=kw.get("fx"),
+        expected_settlement_at=None,
+    )
 
 
-class TestNormalisePaystackEvent:
-    """Tests for Paystack normalisation."""
+def _flw(payload, **kw):
+    return normalise_flutterwave_event(
+        payload=payload,
+        bronze_ingestion_id=uuid4(),
+        run_id=uuid4(),
+        fx_rate_snapshot_id=kw.get("fx_id"),
+        fx_rate_applied=kw.get("fx"),
+        expected_settlement_at=None,
+    )
 
-    def setup_method(self):
-        self.bronze_id = uuid4()
-        self.run_id = uuid4()
 
-    def test_kobo_to_ngn_conversion(self):
-        """5,000,000 kobo should become 50,000.00 NGN."""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["amount_raw"] == Decimal("50000")
-        assert result["amount_ngn"] == Decimal("50000")
+class TestClassifyEvent:
+    @pytest.mark.parametrize(
+        ("event", "tx_type", "status"),
+        [
+            ("charge.success", "credit", "settled"),
+            ("transfer.success", "debit", "settled"),
+            ("transfer.failed", "debit", "failed"),
+            ("transfer.reversed", "reversal", "reversed"),
+        ],
+    )
+    def test_paystack_vocabulary(self, event, tx_type, status):
+        d = classify_event("paystack", event, {"data": {}})
+        assert (d.process, d.transaction_type, d.settlement_status) == (True, tx_type, status)
 
-    def test_currency_preserved(self):
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["currency_raw"] == "NGN"
+    @pytest.mark.parametrize(
+        "event", ["subscription.create", "charge.dispute.create", "paymentrequest.success", "unknown"]
+    )
+    def test_unhandled_paystack_events_are_not_guessed_into_credits(self, event):
+        """Regression: unknown events used to default to transaction_type='credit'."""
+        assert classify_event("paystack", event, {"data": {"amount": 100}}).process is False
 
-    def test_pii_masked(self):
-        """Account number and name should be masked."""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        # Account: 0123456789 → 01******89
-        assert result["beneficiary_account_masked"] == "01******89"
-        # Name: Chioma Okonkwo → C***** O******
-        assert result["beneficiary_name_masked"].startswith("C")
-        assert "*" in result["beneficiary_name_masked"]
+    def test_flutterwave_failed_charge_is_not_a_credit(self):
+        """Regression: charge.completed with status=failed was stored as a settled credit."""
+        d = classify_event("flutterwave", "charge.completed", {"data": {"status": "failed"}})
+        assert d.process is False
 
-    def test_email_not_in_output(self):
-        """Customer email (PII) should never appear in the Silver record."""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        output_str = str(result)
-        assert "chioma@example.com" not in output_str
+    def test_flutterwave_successful_charge(self):
+        d = classify_event("flutterwave", "charge.completed", {"data": {"status": "successful"}})
+        assert (d.process, d.transaction_type, d.settlement_status) == (True, "credit", "settled")
 
-    def test_has_pii_masked_flag(self):
-        """has_pii_masked must always be True for CHECK constraint."""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["has_pii_masked"] is True
+    def test_flutterwave_failed_transfer_is_recorded_as_failed_debit(self):
+        d = classify_event("flutterwave", "transfer.completed", {"data": {"status": "FAILED"}})
+        assert (d.process, d.transaction_type, d.settlement_status) == (True, "debit", "failed")
 
-    def test_idempotency_key_format(self):
-        """Key should follow psp:ref:event format."""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["idempotency_key"] == "paystack:T_abc123xyz:charge.success"
+    def test_payload_without_data(self):
+        assert classify_event("paystack", "charge.success", {}).process is False
 
-    def test_transaction_type_credit(self):
-        """charge.success → credit"""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["transaction_type"] == "credit"
+    def test_unknown_psp(self):
+        assert classify_event("mpesa", "anything", {"data": {}}).process is False
 
-    def test_settlement_status_settled(self):
-        """charge.success → settled"""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["settlement_status"] == "settled"
 
-    def test_fees_extracted(self):
-        """Fees should be converted from kobo to NGN in metadata."""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["psp_metadata"]["fees_ngn"] == 1450.0
+class TestPaystack:
+    def test_kobo_to_naira(self, paystack_charge_payload):
+        assert _ps(paystack_charge_payload)["amount_ngn"] == Decimal("50000")
 
-    def test_lineage_preserved(self):
-        """Bronze ingestion ID and run ID should be preserved."""
-        result = normalise_paystack_event(
-            PAYSTACK_CHARGE_SUCCESS, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["bronze_ingestion_id"] == self.bronze_id
-        assert result["processed_by_run_id"] == self.run_id
+    def test_kobo_precision_kept(self, paystack_charge_payload):
+        p = copy.deepcopy(paystack_charge_payload)
+        p["data"]["amount"] = 1234567  # ₦12,345.67
+        assert _ps(p)["amount_ngn"] == Decimal("12345.67")
 
-    def test_non_ngn_requires_fx_rate(self):
-        """Non-NGN currency without FX rate should raise ValueError."""
+    def test_counterparty_masked_and_tokenized(self, paystack_charge_payload):
+        rec = _ps(paystack_charge_payload)
+        assert rec["beneficiary_name_masked"] == "C***** O******"
+        assert rec["beneficiary_account_masked"] == "01******89"
+        assert rec["counterparty_name_tokens"] == tokenize_name("Chioma Okonkwo")
+        assert "Chioma" not in str(rec)
+
+    def test_email_never_in_output(self, paystack_charge_payload):
+        assert "chioma@example.com" not in str(_ps(paystack_charge_payload))
+
+    def test_idempotency_key(self, paystack_charge_payload):
+        assert _ps(paystack_charge_payload)["idempotency_key"] == "paystack:T_abc123xyz:charge.success"
+
+    def test_fees_kept_in_kobo_not_float(self, paystack_charge_payload):
+        assert _ps(paystack_charge_payload)["psp_metadata"]["fees_kobo"] == 145000
+
+    def test_transfer_counterparty_is_recipient(self):
         payload = {
-            "event": "charge.success",
+            "event": "transfer.success",
             "data": {
-                **PAYSTACK_CHARGE_SUCCESS["data"],
-                "currency": "USD",
+                "reference": "TRF_1",
+                "amount": 1000000,
+                "currency": "NGN",
+                "created_at": "2026-05-01T10:00:00.000Z",
+                "recipient": {
+                    "details": {"account_number": "0011223344", "account_name": "ADA EZE", "bank_code": "044"}
+                },
             },
         }
-        with pytest.raises(ValueError, match="FX rate required"):
-            normalise_paystack_event(
-                payload, self.bronze_id, self.run_id,
-                None, None, None,
-            )
+        rec = _ps(payload)
+        assert rec["transaction_type"] == "debit"
+        assert rec["beneficiary_account_masked"] == "00******44"
+        assert rec["counterparty_name_tokens"] == tokenize_name("ADA EZE")
+
+    def test_non_ngn_requires_fx_rate(self, paystack_charge_payload):
+        p = copy.deepcopy(paystack_charge_payload)
+        p["data"]["currency"] = "USD"
+        with pytest.raises(PermanentEventError, match="FX rate required"):
+            _ps(p)
+
+    def test_non_ngn_converted(self, paystack_charge_payload):
+        p = copy.deepcopy(paystack_charge_payload)
+        p["data"].update(currency="USD", amount=3165)  # $31.65
+        rec = _ps(p, fx=Decimal("0.00063291"), fx_id=uuid4())
+        assert rec["amount_ngn"] == (Decimal("31.65") / Decimal("0.00063291")).quantize(Decimal("0.000001"))
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            lambda d: d.pop("reference"),
+            lambda d: d.pop("amount"),
+            lambda d: d.update(amount=0),
+            lambda d: d.update(amount=-5),
+            lambda d: d.update(amount="abc"),
+            lambda d: d.pop("paid_at"),
+            lambda d: d.update(paid_at="2026-05-01T08:00:00"),  # no timezone
+        ],
+    )
+    def test_malformed_payloads_raise_permanent_error(self, paystack_charge_payload, mutate):
+        p = copy.deepcopy(paystack_charge_payload)
+        mutate(p["data"])
+        with pytest.raises(PermanentEventError):
+            _ps(p)
+
+    def test_unhandled_event_raises(self, paystack_charge_payload):
+        p = copy.deepcopy(paystack_charge_payload)
+        p["event"] = "subscription.create"
+        with pytest.raises(PermanentEventError):
+            _ps(p)
 
 
-class TestNormaliseFlutterwaveEvent:
-    """Tests for Flutterwave normalisation."""
+class TestFlutterwave:
+    def test_major_units_passthrough(self, flutterwave_charge_payload):
+        assert _flw(flutterwave_charge_payload)["amount_ngn"] == Decimal("50000")
 
-    def setup_method(self):
-        self.bronze_id = uuid4()
-        self.run_id = uuid4()
+    def test_json_float_amount_is_exact(self, flutterwave_charge_payload):
+        p = copy.deepcopy(flutterwave_charge_payload)
+        p["data"]["amount"] = 1999.99
+        assert _flw(p)["amount_ngn"] == Decimal("1999.99")
 
-    def test_major_unit_passthrough(self):
-        """Flutterwave amounts are already in major units — no division."""
-        result = normalise_flutterwave_event(
-            FLUTTERWAVE_CHARGE_COMPLETED, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["amount_raw"] == Decimal("50000")
-        assert result["amount_ngn"] == Decimal("50000")
+    def test_pii_masked(self, flutterwave_charge_payload):
+        rec = _flw(flutterwave_charge_payload)
+        assert rec["beneficiary_name_masked"] == "A** J******"
+        assert rec["beneficiary_account_masked"] == "98******10"
+        assert "ade@example.com" not in str(rec)
 
-    def test_pii_masked(self):
-        """Account number and name should be masked."""
-        result = normalise_flutterwave_event(
-            FLUTTERWAVE_CHARGE_COMPLETED, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["beneficiary_account_masked"] == "98******10"
-        assert result["beneficiary_name_masked"].startswith("A")
-        assert "*" in result["beneficiary_name_masked"]
+    def test_metadata_fees_are_strings(self, flutterwave_charge_payload):
+        meta = _flw(flutterwave_charge_payload)["psp_metadata"]
+        assert meta["app_fee"] == "200" and meta["merchant_fee"] == "1250"
+        assert meta["flw_ref"] == "FLW-MOCK-abc123"
 
-    def test_idempotency_key_format(self):
-        result = normalise_flutterwave_event(
-            FLUTTERWAVE_CHARGE_COMPLETED, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["idempotency_key"] == "flutterwave:FLW-TXN-99887:charge.completed"
+    def test_failed_charge_rejected(self, flutterwave_charge_payload):
+        p = copy.deepcopy(flutterwave_charge_payload)
+        p["data"]["status"] = "failed"
+        with pytest.raises(PermanentEventError):
+            _flw(p)
 
-    def test_transaction_type_credit(self):
-        result = normalise_flutterwave_event(
-            FLUTTERWAVE_CHARGE_COMPLETED, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["transaction_type"] == "credit"
-
-    def test_has_pii_masked_flag(self):
-        result = normalise_flutterwave_event(
-            FLUTTERWAVE_CHARGE_COMPLETED, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["has_pii_masked"] is True
-
-    def test_flw_ref_in_metadata(self):
-        """Flutterwave internal ref should be in metadata."""
-        result = normalise_flutterwave_event(
-            FLUTTERWAVE_CHARGE_COMPLETED, self.bronze_id, self.run_id,
-            None, None, None,
-        )
-        assert result["psp_metadata"]["flw_ref"] == "FLW-MOCK-abc123"
+    def test_idempotency_key(self, flutterwave_charge_payload):
+        assert _flw(flutterwave_charge_payload)["idempotency_key"] == "flutterwave:FLW-TXN-99887:charge.completed"
 
 
 class TestParseTimestamp:
-    """Tests for timestamp parsing."""
-
     def test_iso_with_z(self):
-        """ISO 8601 with Z suffix."""
-        result = _parse_timestamp("2026-05-01T08:12:00.000Z")
-        assert result.tzinfo is not None
-        assert result.year == 2026
+        assert parse_timestamp("2026-05-01T08:12:00.000Z") == datetime(2026, 5, 1, 8, 12, tzinfo=UTC)
 
-    def test_iso_with_offset(self):
-        """ISO 8601 with UTC offset."""
-        result = _parse_timestamp("2026-05-01T09:12:00+01:00")
-        assert result.tzinfo is not None
+    def test_offset_converted_to_utc(self):
+        assert parse_timestamp("2026-05-01T09:12:00+01:00") == datetime(2026, 5, 1, 8, 12, tzinfo=UTC)
 
-    def test_none_input(self):
-        assert _parse_timestamp(None) is None
-
-    def test_empty_string(self):
-        assert _parse_timestamp("") is None
+    @pytest.mark.parametrize("value", [None, "", "not-a-date", "2026-05-01T08:00:00"])
+    def test_invalid(self, value):
+        with pytest.raises(PermanentEventError):
+            parse_timestamp(value)

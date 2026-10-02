@@ -1,241 +1,240 @@
 # tests/unit/test_matching.py
 """
-Matching engine unit tests — covers correctness property C-004.
+Matching engine unit tests — correctness property C-004.
 
-References:
-    - QA §4.4: Matching Engine Tests
-    - C-004: Match correctness
+Covers the two tiers, the ambiguity guard, keyed-token name matching, and
+the greedy one-to-one assignment used by the matching flow.
 """
-import pytest
-from datetime import datetime, timedelta, timezone
+
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from hypothesis import given
+from hypothesis import strategies as st
+
 from src.engine.matching import (
-    MatchingConfig, MatchStrategy, TransactionCandidate,
-    find_primary_match, find_probabilistic_match, run_matching,
-    _trigram_similarity, _compute_confidence_evidence,
+    DEFAULT_CONFIG,
+    MatchingConfig,
+    MatchStrategy,
+    TransactionCandidate,
+    find_primary_match,
+    find_probabilistic_match,
+    run_matching,
 )
+from src.engine.pii import mask_name, tokenize_name
+from src.flows.matching_flow import match_all
+
+KEY = b"unit-test-key"
+T0 = datetime(2026, 5, 1, 8, 0, tzinfo=UTC)
 
 
-def _make_tx(
-    id: int = 1, psp: str = "paystack", tx_type: str = "credit",
-    amount: Decimal = Decimal("50000"), currency: str = "NGN",
-    initiated_at: datetime = None, name: str = None,
-    bank_code: str = None, matched: bool = False,
+def _tx(
+    id: int = 1,
+    psp: str = "paystack",
+    tx_type: str = "credit",
+    amount: str = "50000",
+    at: datetime | None = None,
+    name: str | None = None,
+    bank: str | None = None,
+    matched: bool = False,
 ) -> TransactionCandidate:
     return TransactionCandidate(
-        id=id, psp_name=psp, transaction_type=tx_type,
-        amount_ngn=amount, currency_raw=currency,
-        initiated_at=initiated_at or datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc),
-        settled_at=None, beneficiary_name_masked=name,
-        beneficiary_bank_code=bank_code, sender_bank_code=None,
+        id=id,
+        psp_name=psp,
+        transaction_type=tx_type,
+        amount_ngn=Decimal(amount),
+        currency_raw="NGN",
+        initiated_at=at or T0,
+        settled_at=None,
+        counterparty_name_tokens=tokenize_name(name, KEY) if name else [],
+        beneficiary_bank_code=bank,
+        sender_bank_code=None,
         already_matched=matched,
     )
 
 
 class TestPrimaryExactMatching:
-    """C-004: Primary match requires identical amount_ngn + cross-PSP."""
-
     def test_exact_amount_cross_psp_matches(self):
-        source = _make_tx(id=1, psp="paystack", tx_type="credit")
-        candidates = [_make_tx(id=2, psp="flutterwave", tx_type="debit")]
-        result = find_primary_match(source, candidates)
+        result = find_primary_match(_tx(1), [_tx(2, psp="flutterwave", tx_type="debit")])
         assert result.matched_transaction_id == 2
         assert result.strategy == MatchStrategy.EXACT_PRIMARY
         assert result.confidence_score == 1.0
 
-    def test_amount_difference_prevents_match(self):
-        """Even NGN 1 difference prevents primary match."""
-        source = _make_tx(id=1, amount=Decimal("50000"))
-        candidates = [_make_tx(id=2, psp="flutterwave", tx_type="debit",
-                               amount=Decimal("49999"))]
-        result = find_primary_match(source, candidates)
+    def test_one_kobo_difference_prevents_match(self):
+        result = find_primary_match(
+            _tx(1, amount="50000.00"), [_tx(2, psp="flutterwave", tx_type="debit", amount="49999.99")]
+        )
         assert result.matched_transaction_id is None
 
     def test_same_psp_not_matched(self):
-        """Two Paystack transactions should never match."""
-        source = _make_tx(id=1, psp="paystack", tx_type="credit")
-        candidates = [_make_tx(id=2, psp="paystack", tx_type="debit")]
-        result = find_primary_match(source, candidates)
-        assert result.matched_transaction_id is None
+        assert find_primary_match(_tx(1), [_tx(2, tx_type="debit")]).matched_transaction_id is None
 
     def test_already_matched_not_reused(self):
-        """Matched transaction cannot be reused."""
-        source = _make_tx(id=1)
-        candidates = [_make_tx(id=2, psp="flutterwave", tx_type="debit",
-                               matched=True)]
-        result = find_primary_match(source, candidates)
-        assert result.matched_transaction_id is None
+        cand = _tx(2, psp="flutterwave", tx_type="debit", matched=True)
+        assert find_primary_match(_tx(1), [cand]).matched_transaction_id is None
 
     def test_same_type_not_matched(self):
-        """Two credits should not match."""
-        source = _make_tx(id=1, tx_type="credit")
-        candidates = [_make_tx(id=2, psp="flutterwave", tx_type="credit")]
-        result = find_primary_match(source, candidates)
+        assert find_primary_match(_tx(1), [_tx(2, psp="flutterwave", tx_type="credit")]).matched_transaction_id is None
+
+    def test_reversal_never_matches(self):
+        assert (
+            find_primary_match(_tx(1), [_tx(2, psp="flutterwave", tx_type="reversal")]).matched_transaction_id is None
+        )
+
+    def test_outside_primary_window_not_matched(self):
+        far = _tx(2, psp="flutterwave", tx_type="debit", at=T0 + timedelta(hours=73))
+        assert find_primary_match(_tx(1), [far]).matched_transaction_id is None
+
+    def test_closest_in_time_wins_regardless_of_list_order(self):
+        """Regression: the original engine returned the first candidate in list order."""
+        far = _tx(2, psp="flutterwave", tx_type="debit", at=T0 + timedelta(hours=10))
+        near = _tx(3, psp="flutterwave", tx_type="debit", at=T0 + timedelta(minutes=2))
+        assert find_primary_match(_tx(1), [far, near]).matched_transaction_id == 3
+        assert find_primary_match(_tx(1), [near, far]).matched_transaction_id == 3
+
+    def test_equally_close_candidates_are_ambiguous(self):
+        a = _tx(2, psp="flutterwave", tx_type="debit", at=T0 + timedelta(minutes=5))
+        b = _tx(3, psp="flutterwave", tx_type="debit", at=T0 - timedelta(minutes=5))
+        result = find_primary_match(_tx(1), [a, b])
         assert result.matched_transaction_id is None
+        assert result.confidence_evidence["ambiguous"] is True
 
-    def test_outside_time_window_not_matched(self):
-        """Transaction outside 72h window should not match."""
-        source = _make_tx(id=1, initiated_at=datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc))
-        candidates = [_make_tx(
-            id=2, psp="flutterwave", tx_type="debit",
-            initiated_at=datetime(2026, 5, 5, 8, 0, tzinfo=timezone.utc),
-        )]
-        result = find_primary_match(source, candidates)
-        assert result.matched_transaction_id is None
-
-    def test_within_time_window_matches(self):
-        """Transaction within 72h window should match."""
-        t0 = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc)
-        source = _make_tx(id=1, initiated_at=t0)
-        candidates = [_make_tx(
-            id=2, psp="flutterwave", tx_type="debit",
-            initiated_at=t0 + timedelta(hours=71),
-        )]
-        result = find_primary_match(source, candidates)
-        assert result.matched_transaction_id == 2
-
-    def test_selects_first_matching_candidate(self):
-        """When multiple exact matches exist, selects the first."""
-        source = _make_tx(id=1)
-        t0 = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc)
-        candidates = [
-            _make_tx(id=2, psp="flutterwave", tx_type="debit", initiated_at=t0 + timedelta(hours=2)),
-            _make_tx(id=3, psp="flutterwave", tx_type="debit", initiated_at=t0 + timedelta(hours=1)),
-        ]
-        result = find_primary_match(source, candidates)
-        assert result.matched_transaction_id == 2
+    def test_ambiguous_exact_does_not_fall_through_to_fuzzy(self):
+        a = _tx(2, psp="flutterwave", tx_type="debit", at=T0 + timedelta(minutes=5))
+        b = _tx(3, psp="flutterwave", tx_type="debit", at=T0 - timedelta(minutes=5))
+        result = run_matching(_tx(1), [a, b])
+        assert result.strategy == MatchStrategy.UNMATCHED
+        assert result.confidence_evidence.get("ambiguous") is True
 
 
 class TestProbabilisticMatching:
-    """C-004: Probabilistic match with weighted confidence scoring."""
-
-    def test_perfect_probabilistic_score(self):
-        """All components perfect → score near 1.0."""
-        source = _make_tx(id=1, name="C***** O******", bank_code="057")
-        candidates = [_make_tx(
-            id=2, psp="flutterwave", tx_type="debit",
-            name="C***** O******", bank_code="057",
-        )]
-        result = find_probabilistic_match(source, candidates)
+    def test_small_delta_with_name_and_bank_corroboration_matches(self):
+        source = _tx(1, amount="50000", name="Chioma Okonkwo", bank="057")
+        cand = _tx(
+            2,
+            psp="flutterwave",
+            tx_type="debit",
+            amount="49900",
+            name="OKONKWO CHIOMA",
+            bank="057",
+            at=T0 + timedelta(minutes=30),
+        )
+        result = find_probabilistic_match(source, [cand])
         assert result.matched_transaction_id == 2
-        assert result.confidence_score >= 0.95
+        assert result.strategy == MatchStrategy.PROBABILISTIC_SECONDARY
+        assert result.amount_delta_ngn == Decimal("100")
 
-    def test_below_threshold_no_match(self):
-        """Score below 0.75 produces no match."""
-        t0 = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc)
-        source = _make_tx(id=1, amount=Decimal("50000"),
-                          initiated_at=t0, name="C***** O******")
-        candidates = [_make_tx(
-            id=2, psp="flutterwave", tx_type="debit",
-            amount=Decimal("40000"),  # 20% off → low amount score
-            initiated_at=t0 + timedelta(hours=100),
-            name="T**** A****",
-        )]
-        result = find_probabilistic_match(source, candidates)
-        assert result.matched_transaction_id is None
+    def test_outside_amount_tolerance_never_matches(self):
+        source = _tx(1, amount="50000", name="Chioma Okonkwo", bank="057")
+        cand = _tx(2, psp="flutterwave", tx_type="debit", amount="40000", name="Chioma Okonkwo", bank="057")
+        assert find_probabilistic_match(source, [cand]).matched_transaction_id is None
 
-    def test_custom_threshold(self):
-        """Custom threshold should be respected."""
-        config = MatchingConfig(probabilistic_threshold=0.95)
-        source = _make_tx(id=1, name="C***** O******", bank_code="057")
-        candidates = [_make_tx(
-            id=2, psp="flutterwave", tx_type="debit",
-            amount=Decimal("49500"),  # slight diff → not perfect
-            name="C***** O******", bank_code="057",
-        )]
-        result = find_probabilistic_match(source, candidates, config)
-        assert result.confidence_score < 0.95
+    def test_masked_name_collision_does_not_corroborate(self):
+        """Regression: masked names collide for different people with the same
+        initials and word lengths. Keyed tokens must not."""
+        assert mask_name("Chioma Okonkwo") == mask_name("Chisom Onyekwe") == "C***** O******"
+        same = _tx(
+            2,
+            psp="flutterwave",
+            tx_type="debit",
+            amount="49800",
+            name="Chioma Okonkwo",
+            bank="057",
+            at=T0 + timedelta(hours=20),
+        )
+        other = _tx(
+            3,
+            psp="flutterwave",
+            tx_type="debit",
+            amount="49800",
+            name="Chisom Onyekwe",
+            bank="057",
+            at=T0 + timedelta(hours=20),
+        )
+        source = _tx(1, amount="50000", name="Chioma Okonkwo", bank="057")
+        assert find_probabilistic_match(source, [same]).matched_transaction_id == 2
+        assert find_probabilistic_match(source, [other]).matched_transaction_id is None
+
+    def test_near_tie_is_ambiguous(self):
+        source = _tx(1, amount="50000")
+        a = _tx(2, psp="flutterwave", tx_type="debit", amount="49950", at=T0 + timedelta(minutes=10))
+        b = _tx(3, psp="flutterwave", tx_type="debit", amount="49950", at=T0 + timedelta(minutes=11))
+        result = find_probabilistic_match(source, [a, b])
         assert result.matched_transaction_id is None
+        assert result.confidence_evidence["ambiguous"] is True
+
+    def test_custom_threshold_respected(self):
+        source = _tx(1, amount="50000")
+        cand = _tx(2, psp="flutterwave", tx_type="debit", amount="49000", at=T0 + timedelta(hours=40))
+        strict = MatchingConfig(probabilistic_threshold=0.95)
+        assert find_probabilistic_match(source, [cand], strict).matched_transaction_id is None
 
     def test_fx_threshold_flag(self):
-        """Amount delta within FX threshold should flag is_within_fx_threshold."""
-        source = _make_tx(id=1, amount=Decimal("50000"), name="C***** O******", bank_code="057")
-        candidates = [_make_tx(
-            id=2, psp="flutterwave", tx_type="debit",
-            amount=Decimal("49900"),  # 0.2% delta → within 0.5% FX threshold
-            name="C***** O******", bank_code="057",
-        )]
-        result = find_probabilistic_match(source, candidates)
-        if result.matched_transaction_id:
-            assert result.is_within_fx_threshold is True
+        source = _tx(1, amount="100000", name="Ade Johnson", bank="058")
+        tiny = _tx(2, psp="flutterwave", tx_type="debit", amount="99990", name="Ade Johnson", bank="058")
+        result = find_probabilistic_match(source, [tiny])
+        assert result.matched_transaction_id == 2
+        assert result.is_within_fx_threshold is True
 
 
-class TestConfidenceScoreWeights:
-    """Verify confidence score weights sum correctly."""
-
+class TestConfigAndPipeline:
     def test_weights_sum_to_one(self):
-        config = MatchingConfig()
-        total = config.weight_amount + config.weight_time + config.weight_name + config.weight_bank
-        assert abs(total - 1.0) < 0.001
-
-    def test_perfect_components_produce_max_score(self):
-        source = _make_tx(id=1, name="Test", bank_code="057")
-        candidate = _make_tx(id=2, psp="flutterwave", tx_type="debit",
-                             name="Test", bank_code="057")
-        ev = _compute_confidence_evidence(source, candidate, DEFAULT_CONFIG)
-        score = (ev.amount_score * 0.40 + ev.time_score * 0.25
-                 + ev.name_score * 0.25 + ev.bank_score * 0.10)
-        assert abs(score - 1.0) < 0.01
-
-
-class TestTrigramSimilarity:
-    """Test the trigram similarity function."""
-
-    def test_identical_strings(self):
-        assert _trigram_similarity("hello", "hello") == 1.0
-
-    def test_empty_strings(self):
-        assert _trigram_similarity("", "") == 0.0
-        assert _trigram_similarity("hello", "") == 0.0
-
-    def test_similar_strings(self):
-        sim = _trigram_similarity("C***** O******", "C***** O******")
-        assert sim == 1.0
-
-    def test_different_strings(self):
-        sim = _trigram_similarity("abcdef", "zyxwvu")
-        assert sim < 0.3
-
-    def test_case_insensitive(self):
-        assert _trigram_similarity("Hello", "hello") == 1.0
-
-
-class TestFullMatchingPipeline:
-    """Test the full run_matching two-tier pipeline."""
+        c = DEFAULT_CONFIG
+        assert abs(c.weight_amount + c.weight_time + c.weight_name + c.weight_bank - 1.0) < 1e-9
 
     def test_exact_match_preferred_over_probabilistic(self):
-        source = _make_tx(id=1, name="C***** O******", bank_code="057")
-        candidates = [
-            _make_tx(id=2, psp="flutterwave", tx_type="debit",
-                     name="C***** O******", bank_code="057"),
-        ]
-        result = run_matching(source, candidates)
-        assert result.strategy == MatchStrategy.EXACT_PRIMARY
-        assert result.confidence_score == 1.0
-
-    def test_falls_back_to_probabilistic(self):
-        """Different amounts → no exact → probabilistic."""
-        source = _make_tx(id=1, amount=Decimal("50000"),
-                          name="C***** O******", bank_code="057")
-        candidates = [_make_tx(
-            id=2, psp="flutterwave", tx_type="debit",
-            amount=Decimal("49900"), name="C***** O******", bank_code="057",
-        )]
-        result = run_matching(source, candidates)
-        assert result.strategy == MatchStrategy.PROBABILISTIC_SECONDARY
+        exact = _tx(2, psp="flutterwave", tx_type="debit", at=T0 + timedelta(hours=1))
+        fuzzy = _tx(3, psp="flutterwave", tx_type="debit", amount="49990", at=T0)
+        assert run_matching(_tx(1), [fuzzy, exact]).matched_transaction_id == 2
 
     def test_no_candidates_returns_unmatched(self):
-        source = _make_tx(id=1)
-        result = run_matching(source, [])
+        result = run_matching(_tx(1), [])
         assert result.strategy == MatchStrategy.UNMATCHED
         assert result.matched_transaction_id is None
 
-    def test_only_same_psp_candidates_returns_unmatched(self):
-        source = _make_tx(id=1, psp="paystack")
-        candidates = [_make_tx(id=2, psp="paystack", tx_type="debit")]
-        result = run_matching(source, candidates)
-        assert result.strategy == MatchStrategy.UNMATCHED
 
+class TestMatchAll:
+    """The greedy assignment used by the flow (regression for the index bug)."""
 
-from src.engine.matching import DEFAULT_CONFIG
+    def test_each_transaction_matched_at_most_once(self):
+        txs = [
+            _tx(1, at=T0),
+            _tx(2, psp="flutterwave", tx_type="debit", at=T0 + timedelta(minutes=1)),
+            _tx(3, at=T0 + timedelta(minutes=2)),
+            _tx(4, psp="flutterwave", tx_type="debit", at=T0 + timedelta(minutes=3)),
+        ]
+        pairs = match_all(txs, DEFAULT_CONFIG)
+        ids = [p.source_transaction_id for p in pairs] + [p.matched_transaction_id for p in pairs]
+        assert len(ids) == len(set(ids)) == 4
+
+    def test_results_are_keyed_by_id_not_position(self):
+        """A matched target appearing later in the list must not shift results."""
+        txs = [
+            _tx(10, at=T0),
+            _tx(20, psp="flutterwave", tx_type="debit", at=T0 + timedelta(minutes=1)),
+            _tx(30, amount="777", at=T0 + timedelta(minutes=2)),  # unmatched
+        ]
+        pairs = match_all(txs, DEFAULT_CONFIG)
+        assert [(p.source_transaction_id, p.matched_transaction_id) for p in pairs] == [(10, 20)]
+
+    @given(
+        st.lists(
+            st.tuples(
+                st.sampled_from(["paystack", "flutterwave"]),
+                st.sampled_from(["credit", "debit"]),
+                st.sampled_from(["1000", "2500", "5000"]),
+                st.integers(min_value=0, max_value=600),
+            ),
+            max_size=25,
+        )
+    )
+    def test_property_one_to_one(self, specs):
+        txs = [_tx(i, psp=p, tx_type=t, amount=a, at=T0 + timedelta(minutes=m)) for i, (p, t, a, m) in enumerate(specs)]
+        pairs = match_all(txs, DEFAULT_CONFIG)
+        used = [p.source_transaction_id for p in pairs] + [p.matched_transaction_id for p in pairs]
+        assert len(used) == len(set(used))
+        by_id = {t.id: t for t in txs}
+        for p in pairs:
+            a, b = by_id[p.source_transaction_id], by_id[p.matched_transaction_id]
+            assert a.psp_name != b.psp_name
+            assert {a.transaction_type, b.transaction_type} == {"credit", "debit"}

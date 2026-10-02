@@ -14,11 +14,12 @@ References:
     - Data Dictionary XR-005: Idempotency Key
     - ERD §6.5: silver_idempotency_keys
 """
-from datetime import datetime, timezone
 
+from datetime import UTC, datetime
+
+import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-import structlog
 
 log = structlog.get_logger(__name__)
 
@@ -38,11 +39,13 @@ def build_idempotency_key(
     A difference in case between two identical events must not produce
     two different keys.
     """
-    return ":".join([
-        psp_name.lower().strip(),
-        psp_transaction_ref.strip(),
-        event_type.lower().strip(),
-    ])
+    return ":".join(
+        [
+            psp_name.lower().strip(),
+            psp_transaction_ref.strip(),
+            event_type.lower().strip(),
+        ]
+    )
 
 
 async def check_and_register_idempotency_key(
@@ -61,7 +64,7 @@ async def check_and_register_idempotency_key(
     the check-and-increment atomic. No separate SELECT + INSERT
     which would have a race condition under concurrent requests.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     result = await session.execute(
         text("""

@@ -1,24 +1,22 @@
 """Tests for CBN daily return generator."""
+
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
-from decimal import Decimal
-
-import pytest
+from datetime import date
 
 from src.engine.cbn_report import (
     CBNDailySummary,
     CBNTransactionLine,
     ReportStatus,
     TransactionCategory,
-    generate_daily_return,
     export_to_csv,
     export_to_json,
+    generate_daily_return,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────
+
 
 def _make_transaction(
     ref: str = "T_001",
@@ -53,6 +51,7 @@ def _make_discrepancy(
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────
+
 
 class TestGenerateDailyReturn:
     """Tests for the core report generation function."""

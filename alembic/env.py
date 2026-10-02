@@ -2,20 +2,19 @@
 """
 Alembic environment configuration.
 
-Reads database DSN from ALEMBIC_DATABASE_URL (superuser, for DDL/GRANT ops),
-falling back to the pipeline DSN from src.config.Settings.
-
-Migrations require superuser for: CREATE EXTENSION, GRANT, CREATE TABLE.
+Reads the database DSN from ALEMBIC_DATABASE_URL (owner/superuser), which
+DDL, CREATE EXTENSION and GRANT require. There is deliberately no fallback
+to an application role.
 """
+
 import asyncio
 import os
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from src.config import get_settings
+from alembic import context
 
 # Alembic Config object
 config = context.config
@@ -24,9 +23,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Set sqlalchemy.url — prefer ALEMBIC_DATABASE_URL (superuser) over pipeline DSN
-settings = get_settings()
-alembic_url = os.environ.get("ALEMBIC_DATABASE_URL") or str(settings.postgres_pipeline_dsn)
+# Migrations run as the database owner (ALEMBIC_DATABASE_URL), never as an
+# application role: the app roles must not own tables, or GRANT/REVOKE and
+# the append-only triggers' privilege model would not apply to them.
+alembic_url = os.environ.get("ALEMBIC_DATABASE_URL")
+if not alembic_url:
+    raise RuntimeError("ALEMBIC_DATABASE_URL must be set to an owner/superuser DSN to run migrations")
 config.set_main_option("sqlalchemy.url", alembic_url)
 
 

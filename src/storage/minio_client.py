@@ -13,6 +13,7 @@ References:
     - TDD §7.2: MinIO Client — Parquet Write/Read
     - Data Architecture §4.1: Bronze Layer Storage
 """
+
 import io
 from datetime import datetime
 
@@ -38,8 +39,8 @@ class MinIOClient:
         settings = get_settings()
         self._client = Minio(
             endpoint=settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
+            access_key=settings.minio_access_key.get_secret_value(),
+            secret_key=settings.minio_secret_key.get_secret_value(),
             secure=settings.minio_use_ssl,
         )
         self._bronze_bucket = settings.minio_bronze_bucket
@@ -66,12 +67,7 @@ class MinIOClient:
         """
         date_str = event_date.strftime("%Y-%m-%d")
         hour_str = event_date.strftime("%H")
-        object_path = (
-            f"{psp_name}/"
-            f"event_date={date_str}/"
-            f"hour={hour_str}/"
-            f"{run_id}-part-{part_number:04d}.parquet"
-        )
+        object_path = f"{psp_name}/event_date={date_str}/hour={hour_str}/{run_id}-part-{part_number:04d}.parquet"
 
         buffer = io.BytesIO()
         pq.write_table(
@@ -113,9 +109,7 @@ class MinIOClient:
         Read a Parquet file from MinIO into a PyArrow Table.
         Strips the s3:// prefix if present.
         """
-        clean_path = object_path.replace(
-            f"s3://{self._bronze_bucket}/", ""
-        )
+        clean_path = object_path.replace(f"s3://{self._bronze_bucket}/", "")
         response = None
         try:
             response = self._client.get_object(self._bronze_bucket, clean_path)

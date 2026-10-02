@@ -13,7 +13,6 @@ References:
     - TDD §9.1: Idempotency Engine
     - Data Dictionary XR-005: Idempotency Key
 """
-import pytest
 
 from src.engine.idempotency import build_idempotency_key
 

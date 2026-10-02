@@ -12,13 +12,13 @@ Verifies that:
 References:
     - TDD §9.5: Schema Contracts
 """
+
 import pandas as pd
 import pandera
 import pytest
-from datetime import datetime, timezone
 
-from src.contracts.bronze.paystack_schema import PAYSTACK_BRONZE_SCHEMA
 from src.contracts.bronze.flutterwave_schema import FLUTTERWAVE_BRONZE_SCHEMA
+from src.contracts.bronze.paystack_schema import PAYSTACK_BRONZE_SCHEMA
 
 
 def _valid_bronze_row():

@@ -1,31 +1,32 @@
 """
-CBN Daily Return Generator.
+Regulated-institution daily return (EXPERIMENTAL — not a compliance product).
 
-Produces Central Bank of Nigeria compliant daily transaction returns
-from Gold-layer reconciliation data.
+Builds a CBN-*style* daily summary from Silver/Gold data: volumes per PSP,
+match rate, non-NGN ("cross-border") volume, open exposure, and two simple
+heuristic flags. It is a reporting prototype for institutions that file
+returns. It does not follow any official CBN return template, and merchants
+do not file CBN returns. The suspicious-transaction and velocity rules below
+are illustrative heuristics, not regulatory thresholds.
 
-Output format follows CBN's electronic financial return (EFR) structure:
-- Daily transaction summary per PSP
-- Cross-border transaction declarations
-- Suspicious transaction flags (velocity anomalies)
-- Settlement reconciliation status
+Money is Decimal throughout; the summary serialises amounts as strings.
 
-Schedule: Prefect cron at 02:00 WAT daily.
+Schedule: daily at 02:00 WAT via src/flows/daily_report_flow.py.
 """
+
 from __future__ import annotations
 
 import csv
 import io
 import json
-from dataclasses import dataclass, field, asdict
-from datetime import date, datetime, timezone, timedelta
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, date, datetime
 from decimal import Decimal
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
+from typing import Any
 from uuid import uuid4
 
 
-class ReportStatus(str, Enum):
+class ReportStatus(StrEnum):
     DRAFT = "draft"
     GENERATED = "generated"
     REVIEWED = "reviewed"
@@ -33,7 +34,7 @@ class ReportStatus(str, Enum):
     FAILED = "failed"
 
 
-class TransactionCategory(str, Enum):
+class TransactionCategory(StrEnum):
     DOMESTIC_CREDIT = "domestic_credit"
     DOMESTIC_DEBIT = "domestic_debit"
     CROSS_BORDER_INWARD = "cross_border_inward"
@@ -47,29 +48,27 @@ class CBNDailySummary:
     report_date: str
     report_id: str = field(default_factory=lambda: f"CBN-{uuid4().hex[:8].upper()}")
     status: str = ReportStatus.DRAFT.value
-    generated_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    generated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     # Volume metrics
     total_transactions: int = 0
-    total_volume_ngn: float = 0.0
+    total_volume_ngn: Decimal = Decimal(0)
     matched_transactions: int = 0
     unmatched_transactions: int = 0
     match_rate_pct: float = 0.0
 
     # Per-PSP breakdown
-    psp_breakdown: dict = field(default_factory=dict)
+    psp_breakdown: dict[str, Any] = field(default_factory=dict)
 
     # Cross-border
     cross_border_count: int = 0
-    cross_border_volume_ngn: float = 0.0
-    cross_border_currencies: list = field(default_factory=list)
+    cross_border_volume_ngn: Decimal = Decimal(0)
+    cross_border_currencies: list[str] = field(default_factory=list)
 
     # Discrepancies
     open_discrepancies: int = 0
     resolved_discrepancies: int = 0
-    total_exposure_ngn: float = 0.0
+    total_exposure_ngn: Decimal = Decimal(0)
 
     # Flags
     suspicious_transaction_count: int = 0
@@ -83,24 +82,24 @@ class CBNTransactionLine:
     reference: str
     psp: str
     category: str
-    amount_ngn: float
+    amount_ngn: Decimal
     currency: str
-    fx_rate_applied: Optional[float]
+    fx_rate_applied: Decimal | None
     settlement_status: str
     beneficiary_masked: str  # PII masked — NUBAN last 4 only
     timestamp: str
     match_status: str
-    discrepancy_type: Optional[str] = None
+    discrepancy_type: str | None = None
 
 
 def generate_daily_return(
     report_date: date,
-    transactions: list[dict],
-    discrepancies: list[dict],
-    fx_snapshots: list[dict],
+    transactions: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    fx_snapshots: list[dict[str, Any]],
 ) -> CBNDailySummary:
     """
-    Generate a CBN-compliant daily return from Gold-layer data.
+    Generate the experimental daily return from Silver/Gold data.
 
     Args:
         report_date: The business date for this return
@@ -117,14 +116,14 @@ def generate_daily_return(
     summary.total_transactions = len(transactions)
 
     for txn in transactions:
-        amount = float(txn.get("amount_ngn", 0))
+        amount = Decimal(str(txn.get("amount_ngn", 0)))
         summary.total_volume_ngn += amount
 
         psp = txn.get("psp_name", "unknown")
         if psp not in summary.psp_breakdown:
             summary.psp_breakdown[psp] = {
                 "count": 0,
-                "volume_ngn": 0.0,
+                "volume_ngn": Decimal(0),
                 "matched": 0,
                 "unmatched": 0,
             }
@@ -147,15 +146,13 @@ def generate_daily_return(
                 summary.cross_border_currencies.append(currency)
 
     if summary.total_transactions > 0:
-        summary.match_rate_pct = round(
-            (summary.matched_transactions / summary.total_transactions) * 100, 2
-        )
+        summary.match_rate_pct = round((summary.matched_transactions / summary.total_transactions) * 100, 2)
 
     # ── Discrepancy summary ───────────────────────────────────────────
     for disc in discrepancies:
         if disc.get("status") == "open":
             summary.open_discrepancies += 1
-            summary.total_exposure_ngn += float(disc.get("amount_ngn", 0))
+            summary.total_exposure_ngn += Decimal(str(disc.get("amount_ngn", 0)))
         elif disc.get("status") == "resolved":
             summary.resolved_discrepancies += 1
 
@@ -167,7 +164,7 @@ def generate_daily_return(
     return summary
 
 
-def _detect_suspicious(transactions: list[dict]) -> int:
+def _detect_suspicious(transactions: list[dict[str, Any]]) -> int:
     """
     Flag transactions matching known structuring patterns.
 
@@ -177,18 +174,18 @@ def _detect_suspicious(transactions: list[dict]) -> int:
     - Rapid succession from same beneficiary (< 2 min intervals)
     """
     count = 0
-    threshold = 4_500_000  # Just below CBN reporting threshold
+    # Illustrative structuring band, not a sourced regulatory threshold.
+    lower, upper = Decimal(4_500_000), Decimal(5_000_000)
 
     for txn in transactions:
-        amount = float(txn.get("amount_ngn", 0))
-        # Structuring pattern: amount between 4.5M and 5M
-        if threshold <= amount < 5_000_000:
+        amount = Decimal(str(txn.get("amount_ngn", 0)))
+        if lower <= amount < upper:
             count += 1
 
     return count
 
 
-def _detect_velocity_anomalies(transactions: list[dict]) -> int:
+def _detect_velocity_anomalies(transactions: list[dict[str, Any]]) -> int:
     """
     Detect unusual transaction velocity per beneficiary.
 
@@ -246,37 +243,51 @@ def export_to_csv(summary: CBNDailySummary, lines: list[CBNTransactionLine]) -> 
     writer.writerow(["PSP BREAKDOWN"])
     writer.writerow(["PSP", "Count", "Volume (NGN)", "Matched", "Unmatched"])
     for psp, data in summary.psp_breakdown.items():
-        writer.writerow([
-            psp,
-            data["count"],
-            f"{data['volume_ngn']:,.2f}",
-            data["matched"],
-            data["unmatched"],
-        ])
+        writer.writerow(
+            [
+                psp,
+                data["count"],
+                f"{data['volume_ngn']:,.2f}",
+                data["matched"],
+                data["unmatched"],
+            ]
+        )
     writer.writerow([])
 
     # Transaction lines
     if lines:
         writer.writerow(["TRANSACTION DETAIL"])
-        writer.writerow([
-            "Reference", "PSP", "Category", "Amount (NGN)", "Currency",
-            "FX Rate", "Settlement Status", "Beneficiary", "Timestamp",
-            "Match Status", "Discrepancy Type",
-        ])
+        writer.writerow(
+            [
+                "Reference",
+                "PSP",
+                "Category",
+                "Amount (NGN)",
+                "Currency",
+                "FX Rate",
+                "Settlement Status",
+                "Beneficiary",
+                "Timestamp",
+                "Match Status",
+                "Discrepancy Type",
+            ]
+        )
         for line in lines:
-            writer.writerow([
-                line.reference,
-                line.psp,
-                line.category,
-                f"{line.amount_ngn:,.2f}",
-                line.currency,
-                line.fx_rate_applied or "",
-                line.settlement_status,
-                line.beneficiary_masked,
-                line.timestamp,
-                line.match_status,
-                line.discrepancy_type or "",
-            ])
+            writer.writerow(
+                [
+                    line.reference,
+                    line.psp,
+                    line.category,
+                    f"{line.amount_ngn:,.2f}",
+                    line.currency,
+                    line.fx_rate_applied or "",
+                    line.settlement_status,
+                    line.beneficiary_masked,
+                    line.timestamp,
+                    line.match_status,
+                    line.discrepancy_type or "",
+                ]
+            )
 
     return output.getvalue()
 

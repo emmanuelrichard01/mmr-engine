@@ -16,6 +16,7 @@ Every log event includes:
 References:
     - TDD §12.2: Structured Logging
 """
+
 import logging
 import sys
 from typing import Literal

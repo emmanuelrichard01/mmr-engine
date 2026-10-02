@@ -2,160 +2,205 @@
 """
 Prometheus metrics for the Reconciliation Engine.
 
-All metrics follow the naming convention: reconciliation_{subsystem}_{metric_name}_{unit}
-Labels are kept minimal to prevent cardinality explosion.
+Every metric defined here is recorded somewhere; an unused metric is a dashboard
+panel or alert rule that can never fire. Naming: reconciliation_{subsystem}_
+{name}_{unit}. Labels are bounded enums (PSP, strategy, classification),
+never ids, to keep cardinality fixed.
 
-References:
-    - TDD §12.1: Prometheus Metrics
-    - PRD NFR-006: Observability
+Three processes expose metrics:
+    api              :8000/metrics  (HTTP, webhook, auth + DB-derived gauges)
+    consumer_worker  :9101/metrics  (Bronze/Silver ingestion)
+    scheduler        :9102/metrics  (matching, alerting, FX)
+
+The DB-derived gauges (open exposure, match rate, FX age) are refreshed by
+the API at scrape time (`refresh_state_gauges`), so they reflect the
+database rather than whatever one process happened to observe.
 """
-from prometheus_client import (
-    Counter,
-    Gauge,
-    Histogram,
-    REGISTRY,
-)
+
+import time
+from decimal import Decimal
+
+from prometheus_client import REGISTRY, Counter, Gauge, Histogram
+from sqlalchemy import text
 
 METRICS_REGISTRY = REGISTRY
 
-# ── Webhook Ingestion ─────────────────────────────────────────────────────────
+# ── Webhook ingestion (api) ────────────────────────────────────────────────
 WEBHOOK_RECEIVED_COUNTER = Counter(
     "reconciliation_webhooks_received_total",
-    "Total webhooks received by PSP and event type",
+    "PSP events durably published to Kafka",
     ["psp_name", "event_type"],
 )
-
 WEBHOOK_SIGNATURE_FAILURES = Counter(
     "reconciliation_webhook_signature_failures_total",
-    "Webhook events rejected due to invalid HMAC signature",
-    ["psp"],
+    "Webhooks rejected for a missing or invalid signature",
+    ["psp_name"],
 )
-
 DUPLICATE_EVENTS_COUNTER = Counter(
     "reconciliation_duplicate_events_total",
-    "Webhook events skipped due to idempotency key already existing",
+    "Events skipped because their idempotency key was already registered",
     ["psp_name"],
 )
 
-# ── Pipeline ──────────────────────────────────────────────────────────────────
-PIPELINE_LATENCY = Histogram(
-    "reconciliation_pipeline_duration_seconds",
-    "End-to-end pipeline duration from webhook receipt to Gold output",
-    ["flow_name"],
-    buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
+# ── Bronze / Silver (consumer_worker) ──────────────────────────────────────
+BRONZE_RECORDS_WRITTEN = Counter(
+    "reconciliation_bronze_records_written_total",
+    "Raw events written to Bronze (MinIO)",
+    ["psp_name"],
 )
-
 SILVER_RECORDS_WRITTEN = Counter(
     "reconciliation_silver_records_written_total",
-    "Canonical transaction records written to Silver layer",
+    "New canonical transactions written to Silver",
     ["psp_name"],
 )
-
-INGESTION_LATENCY = Histogram(
-    "reconciliation_ingestion_latency_seconds",
-    "Webhook receipt to Bronze persistence latency",
-    buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
+EVENTS_SKIPPED = Counter(
+    "reconciliation_events_skipped_total",
+    "Events kept in Bronze only (event type or status not modelled)",
+    ["psp_name"],
+)
+DEAD_LETTERED_COUNTER = Counter(
+    "reconciliation_dead_lettered_total",
+    "Messages parked in the dead-letter topic",
+    ["topic"],
 )
 
-# ── Matching Engine ───────────────────────────────────────────────────────────
+# ── Matching / discrepancies (scheduler) ───────────────────────────────────
 MATCHING_RESULTS = Counter(
     "reconciliation_matching_results_total",
-    "Matching engine outcomes by strategy and result",
-    ["strategy", "result"],  # result: matched | no_match
+    "Matching engine outcomes",
+    ["strategy"],
 )
-
 MATCHING_CONFIDENCE_HISTOGRAM = Histogram(
-    "reconciliation_matching_confidence_score",
-    "Distribution of confidence scores for probabilistic matches",
-    buckets=[0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99, 1.0],
+    "reconciliation_match_confidence",
+    "Confidence score of accepted matches",
+    buckets=[0.75, 0.8, 0.85, 0.9, 0.95, 0.99, 1.0],
 )
-
-# ── Financial State ───────────────────────────────────────────────────────────
-OPEN_DISCREPANCIES = Gauge(
-    "reconciliation_open_discrepancies",
-    "Current count of open discrepancies by PSP and classification",
-    ["psp_name", "classification"],
+DISCREPANCIES_RAISED = Counter(
+    "reconciliation_discrepancies_raised_total",
+    "Discrepancies newly raised",
+    ["classification"],
 )
-
-OPEN_EXPOSURE_NGN = Gauge(
-    "reconciliation_open_exposure_ngn",
-    "Total estimated financial exposure from open discrepancies in NGN",
-    ["psp_name"],
-)
-
-MATCH_RATE_GAUGE = Gauge(
-    "reconciliation_match_rate_pct",
-    "Current reconciliation match rate percentage by PSP",
-    ["psp_name"],
-)
-
-# ── FX ────────────────────────────────────────────────────────────────────────
-FX_RATE_GAUGE = Gauge(
-    "reconciliation_fx_rate",
-    "Current FX rate (1 NGN = X quote currency)",
-    ["currency_pair"],
-)
-
-FX_RATE_AGE_SECONDS = Gauge(
-    "reconciliation_fx_rate_age_seconds",
-    "Age of most recent FX rate snapshot in seconds",
-    ["currency_pair"],
-)
-
-# ── API Layer ─────────────────────────────────────────────────────────────────
-HTTP_REQUEST_COUNTER = Counter(
-    "reconciliation_http_requests_total",
-    "HTTP requests by method, path, and status code",
-    ["method", "path", "status_code"],
-)
-
-HTTP_REQUEST_DURATION = Histogram(
-    "reconciliation_http_request_duration_seconds",
-    "HTTP request latency by path",
-    ["method", "path"],
-    buckets=[0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
-)
-
-AUTH_FAILURES_COUNTER = Counter(
-    "reconciliation_auth_failures_total",
-    "Authentication failures by reason",
-    ["reason"],  # invalid_key, expired_key, missing_key, insufficient_role
-)
-
-RATE_LIMIT_COUNTER = Counter(
-    "reconciliation_rate_limit_events_total",
-    "Rate limiting events by outcome",
-    ["outcome"],  # allowed, rejected
-)
-
-# ── Alerting ──────────────────────────────────────────────────────────────────
-ALERTS_DISPATCHED_COUNTER = Counter(
-    "reconciliation_alerts_dispatched_total",
-    "Alert notifications sent by channel and severity",
-    ["channel", "severity"],  # channel: slack, email | severity: critical, high, medium
-)
-
-# ── Operational Health ────────────────────────────────────────────────────────
-WEBHOOK_GAP_COUNTER = Counter(
-    "reconciliation_webhook_gaps_detected_total",
-    "Transaction gaps detected between webhooks and API records",
-    ["psp_name"],
-)
-
 BACKFILL_RECORDS_COUNTER = Counter(
     "reconciliation_backfill_records_total",
-    "Records imported via polling backfill flow",
+    "Polled PSP transactions by ingestion outcome (outcome=new means a recovered gap)",
+    ["psp_name", "outcome"],
+)
+ALERTS_DISPATCHED_COUNTER = Counter(
+    "reconciliation_alerts_dispatched_total",
+    "Alert delivery attempts",
+    ["channel", "outcome"],
+)
+
+# ── API (api) ──────────────────────────────────────────────────────────────
+HTTP_REQUEST_DURATION = Histogram(
+    "reconciliation_http_request_duration_seconds",
+    "HTTP request latency by route template",
+    ["method", "route", "status_class"],
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+)
+AUTH_FAILURES_COUNTER = Counter(
+    "reconciliation_auth_failures_total",
+    "Rejected API authentication attempts",
+    ["reason"],
+)
+RATE_LIMIT_COUNTER = Counter(
+    "reconciliation_rate_limited_total",
+    "Requests rejected by the rate limiter",
+)
+
+# ── DB-derived state (api, refreshed at scrape) ────────────────────────────
+OPEN_DISCREPANCIES = Gauge(
+    "reconciliation_open_discrepancies",
+    "Open discrepancies",
+    ["psp_name", "severity"],
+)
+OPEN_EXPOSURE_NGN = Gauge(
+    "reconciliation_open_exposure_ngn",
+    "Estimated exposure of open discrepancies, NGN",
     ["psp_name"],
 )
-
-CBN_REPORT_COUNTER = Counter(
-    "reconciliation_cbn_reports_generated_total",
-    "CBN daily returns generated by status",
-    ["status"],  # generated, failed
+MATCH_RATE_GAUGE = Gauge(
+    "reconciliation_match_rate_pct",
+    "Share of credit/debit transactions matched over the last 7 days",
+    ["psp_name"],
+)
+FX_RATE_AGE_SECONDS = Gauge(
+    "reconciliation_fx_rate_age_seconds",
+    "Age of the current FX snapshot",
+    ["currency_pair"],
 )
 
-SYSTEM_UP_GAUGE = Gauge(
-    "reconciliation_system_up",
-    "System health indicator (1 = healthy, 0 = unhealthy)",
-)
+_STATE_TTL_SECONDS = 15.0
+_last_state_refresh = 0.0
 
+
+async def refresh_state_gauges() -> None:
+    """Recompute DB-derived gauges, at most once per _STATE_TTL_SECONDS."""
+    global _last_state_refresh
+    if time.monotonic() - _last_state_refresh < _STATE_TTL_SECONDS:
+        return
+    from src.storage.postgres import readonly_session
+
+    async with readonly_session() as session:
+        open_rows = (
+            (
+                await session.execute(
+                    text("""
+            SELECT s.psp_name::text AS psp_name, COALESCE(d.severity, 'unknown') AS severity,
+                   COUNT(*) AS n, COALESCE(SUM(d.estimated_exposure_ngn), 0) AS exposure
+            FROM gold_discrepancies d
+            JOIN silver_canonical_transactions s ON s.id = d.transaction_id
+            WHERE d.status IN ('open', 'under_review', 'escalated')
+            GROUP BY 1, 2
+        """)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        rate_rows = (
+            (
+                await session.execute(
+                    text("""
+            SELECT s.psp_name::text AS psp_name,
+                   COUNT(*) AS total,
+                   COUNT(m.transaction_id) AS matched
+            FROM silver_canonical_transactions s
+            LEFT JOIN gold_matched_transactions m ON m.transaction_id = s.id
+            WHERE s.transaction_type IN ('credit', 'debit')
+              AND s.initiated_at >= NOW() - INTERVAL '7 days'
+            GROUP BY 1
+        """)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        fx_rows = (
+            (
+                await session.execute(
+                    text("""
+            SELECT currency_pair, EXTRACT(EPOCH FROM (NOW() - captured_at)) AS age
+            FROM silver_fx_rate_snapshots WHERE valid_until IS NULL
+        """)
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    OPEN_DISCREPANCIES.clear()
+    OPEN_EXPOSURE_NGN.clear()
+    exposure_by_psp: dict[str, Decimal] = {}
+    for r in open_rows:
+        OPEN_DISCREPANCIES.labels(psp_name=r["psp_name"], severity=r["severity"]).set(r["n"])
+        exposure_by_psp[r["psp_name"]] = exposure_by_psp.get(r["psp_name"], Decimal(0)) + Decimal(r["exposure"])
+    for psp, exposure in exposure_by_psp.items():
+        OPEN_EXPOSURE_NGN.labels(psp_name=psp).set(float(exposure))  # gauge values are floats by design
+    MATCH_RATE_GAUGE.clear()
+    for r in rate_rows:
+        MATCH_RATE_GAUGE.labels(psp_name=r["psp_name"]).set(100.0 * r["matched"] / r["total"] if r["total"] else 0.0)
+    FX_RATE_AGE_SECONDS.clear()
+    for r in fx_rows:
+        FX_RATE_AGE_SECONDS.labels(currency_pair=r["currency_pair"]).set(float(r["age"]))
+    _last_state_refresh = time.monotonic()

@@ -20,6 +20,7 @@ References:
     - TDD §8.3: Flutterwave Connector
     - Flutterwave Docs: https://developer.flutterwave.com/docs/integration-guides/webhooks
 """
+
 import hmac
 from typing import Any
 
@@ -49,15 +50,19 @@ class FlutterwaveConnector(BasePSPConnector):
         verif-hash header directly against a configured secret hash.
         Header: verif-hash
         """
-        settings = get_settings()
+        expected = get_settings().flutterwave_secret_hash.get_secret_value()
+        # Settings rejects an empty secret at boot; the header check here guards
+        # against a missing header ever comparing equal to anything.
+        if not signature_header or not expected:
+            return False
         return hmac.compare_digest(
-            settings.flutterwave_secret_hash,
-            signature_header,
+            expected.encode("utf-8"),
+            signature_header.encode("utf-8"),
         )
 
     def extract_event_type(self, payload: dict[str, Any]) -> str:
         """Extract event type from Flutterwave payload root."""
-        return payload.get("event", "unknown")
+        return str(payload.get("event") or "unknown")
 
     def is_handled_event(self, event_type: str) -> bool:
         """Check if this event type should be processed to Silver."""
@@ -65,4 +70,4 @@ class FlutterwaveConnector(BasePSPConnector):
 
     def extract_transaction_ref(self, payload: dict[str, Any]) -> str:
         """Extract the PSP transaction reference from the payload."""
-        return payload.get("data", {}).get("tx_ref", "")
+        return str((payload.get("data") or {}).get("tx_ref") or "")

@@ -14,9 +14,8 @@ References:
     - TDD §9.5: Schema Contracts
     - Data Architecture §5: Bronze Layer — "Accept everything, validate nothing"
 """
-import pandera as pa
-from pandera import Column, DataFrameSchema, Check
 
+from pandera.pandas import Check, Column, DataFrameSchema
 
 PAYSTACK_BRONZE_SCHEMA = DataFrameSchema(
     columns={
@@ -35,6 +34,5 @@ PAYSTACK_BRONZE_SCHEMA = DataFrameSchema(
     strict=False,  # Allow extra columns — Bronze is schema-on-read
     coerce=True,
     name="paystack_bronze",
-    description="Validates minimum structural requirements for Paystack "
-    "Bronze records before Silver promotion.",
+    description="Validates minimum structural requirements for Paystack Bronze records before Silver promotion.",
 )

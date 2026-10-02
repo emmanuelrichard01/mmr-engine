@@ -22,16 +22,18 @@ References:
     - Data Architecture §5: Silver Layer — "Trust but verify"
     - ERD §6.5: silver_canonical_transactions constraints
 """
-import pandera as pa
-from pandera import Column, DataFrameSchema, Check
-import pandas as pd
 
-SUPPORTED_PSPS = ["paystack", "flutterwave", "mpesa"]
-SUPPORTED_CURRENCIES = ["NGN", "USD", "GBP", "EUR", "KES", "GHS", "ZAR"]
+import pandas as pd
+from pandera.pandas import Check, Column, DataFrameSchema
+
+SUPPORTED_PSPS = ["paystack", "flutterwave"]
+# Non-NGN currencies are only accepted where an FX pair is captured (src/engine/fx.py).
+SUPPORTED_CURRENCIES = ["NGN", "USD", "GBP", "EUR"]
 SETTLEMENT_STATUSES = ["pending", "settled", "failed", "reversed"]
 TRANSACTION_TYPES = ["credit", "debit", "reversal"]
 
 # ── Custom Checks ─────────────────────────────────────────────────────────────
+
 
 def _check_no_raw_nuban(series: pd.Series) -> pd.Series:
     """
@@ -67,7 +69,7 @@ def _check_fx_rate_for_non_ngn(df: pd.DataFrame) -> bool:
     non_ngn = df[df["currency_raw"] != "NGN"]
     if non_ngn.empty:
         return True
-    return non_ngn["fx_rate_snapshot_id"].notna().all()
+    return bool(non_ngn["fx_rate_snapshot_id"].notna().all())
 
 
 # ── Schema Definition ─────────────────────────────────────────────────────────
@@ -135,7 +137,8 @@ SILVER_CANONICAL_SCHEMA = DataFrameSchema(
         ),
         # ── Nullable fields with PII guards ───────────────────────────────
         "beneficiary_account_masked": Column(
-            str, nullable=True,
+            str,
+            nullable=True,
             checks=[_NO_RAW_NUBAN_CHECK],
             description="Must be masked format (e.g. '01******89'), never raw NUBAN.",
         ),
@@ -143,7 +146,8 @@ SILVER_CANONICAL_SCHEMA = DataFrameSchema(
         "beneficiary_bank_name": Column(str, nullable=True),
         "beneficiary_name_masked": Column(str, nullable=True),
         "sender_account_masked": Column(
-            str, nullable=True,
+            str,
+            nullable=True,
             checks=[_NO_RAW_NUBAN_CHECK],
             description="Must be masked format, never raw NUBAN.",
         ),
@@ -156,10 +160,12 @@ SILVER_CANONICAL_SCHEMA = DataFrameSchema(
     },
     checks=[
         # Cross-field: FX rate required for non-NGN (C-006)
-        Check(_check_fx_rate_for_non_ngn, error=(
-            "Non-NGN transaction missing fx_rate_snapshot_id — "
-            "FX rate must be captured before Silver write (C-006)"
-        )),
+        Check(
+            _check_fx_rate_for_non_ngn,
+            error=(
+                "Non-NGN transaction missing fx_rate_snapshot_id — FX rate must be captured before Silver write (C-006)"
+            ),
+        ),
     ],
     strict=False,  # Allow extra columns (id, bronze_ingestion_id, etc.)
     coerce=True,

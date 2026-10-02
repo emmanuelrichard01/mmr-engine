@@ -21,8 +21,9 @@ References:
     - TDD §10.2: Polling Fallback Flow
     - Paystack API: https://paystack.com/docs/api
 """
+
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, cast
 
 import httpx
 import structlog
@@ -30,6 +31,8 @@ import structlog
 from src.config import get_settings
 
 log = structlog.get_logger(__name__)
+
+MAX_PAGES = 200  # hard stop per call
 
 
 class PaystackAPIClient:
@@ -44,7 +47,7 @@ class PaystackAPIClient:
     def __init__(self) -> None:
         settings = get_settings()
         self._headers = {
-            "Authorization": f"Bearer {settings.paystack_secret_key}",
+            "Authorization": f"Bearer {settings.paystack_secret_key.get_secret_value()}",
             "Content-Type": "application/json",
         }
         self._timeout = 10.0
@@ -74,12 +77,12 @@ class PaystackAPIClient:
                 reference=reference,
                 status=data.get("data", {}).get("status"),
             )
-            return data["data"]
+            return cast(dict[str, Any], data["data"])
 
     async def list_transactions(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
         status: str = "success",
         per_page: int = 50,
         page: int = 1,
@@ -120,12 +123,12 @@ class PaystackAPIClient:
                 page=page,
                 status=status,
             )
-            return data["data"]
+            return cast(list[dict[str, Any]], data["data"])
 
     async def list_settlements(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
         per_page: int = 50,
     ) -> list[dict[str, Any]]:
         """
@@ -161,7 +164,7 @@ class PaystackAPIClient:
                 "paystack.api.settlements_listed",
                 count=len(data.get("data", [])),
             )
-            return data["data"]
+            return cast(list[dict[str, Any]], data["data"])
 
     async def list_settlement_transactions(
         self,
@@ -182,50 +185,22 @@ class PaystackAPIClient:
                 timeout=self._timeout,
             )
             response.raise_for_status()
-            return response.json()["data"]
+            return cast(list[dict[str, Any]], response.json()["data"])
 
-    async def fetch_missing_transactions(
-        self,
-        known_references: set[str],
-        from_date: str,
-        to_date: str,
-    ) -> list[dict[str, Any]]:
-        """
-        Gap detection: find transactions in Paystack's records
-        that we don't have in our system (missed webhooks).
-
-        Compares API-listed transactions against our known references.
-        Returns transactions present in Paystack but missing locally.
-        """
-        missing = []
-        page = 1
-
-        while True:
-            transactions = await self.list_transactions(
-                from_date=from_date,
-                to_date=to_date,
-                per_page=100,
+    async def list_all_successful(self, since: datetime, until: datetime) -> list[dict[str, Any]]:
+        """Every successful transaction in [since, until], across all pages."""
+        page_size = 100
+        results: list[dict[str, Any]] = []
+        for page in range(1, MAX_PAGES + 1):
+            batch = await self.list_transactions(
+                from_date=since.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                to_date=until.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                status="success",
+                per_page=page_size,
                 page=page,
             )
-
-            if not transactions:
-                break
-
-            for tx in transactions:
-                ref = tx.get("reference", "")
-                if ref and ref not in known_references:
-                    missing.append(tx)
-
-            if len(transactions) < 100:
-                break
-            page += 1
-
-        if missing:
-            log.warning(
-                "paystack.api.missing_transactions_found",
-                count=len(missing),
-                from_date=from_date,
-                to_date=to_date,
-            )
-
-        return missing
+            results.extend(batch)
+            if len(batch) < page_size:
+                return results
+        log.warning("paystack.api.page_limit_reached", pages=MAX_PAGES)
+        return results

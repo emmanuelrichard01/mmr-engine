@@ -2,290 +2,332 @@
 """
 Silver-to-Gold Matching Flow.
 
-Orchestrates the reconciliation matching pipeline:
-    1. Fetch unmatched Silver transactions
-    2. Run the two-tier matching engine
-    3. Write matched pairs to gold_reconciliation_pairs
-    4. Classify and write discrepancies to gold_discrepancies
-    5. Update exposure tracker
+    1. Load every not-yet-matched credit/debit inside the lookback window
+    2. Run the two-tier matching engine (pure, in memory)
+    3. Persist each pair atomically: the pair row plus one
+       gold_matched_transactions row per side. The primary key on
+       transaction_id means a concurrent run cannot match the same
+       transaction twice; the losing run's savepoint is rolled back.
+    4. Classify amount/FX discrepancies on probabilistic pairs with a delta
+    5. Raise missing-settlement discrepancies with one set-based SQL statement
+    6. Refresh the summary view
+
+Fixes over the original implementation:
+    - Results are keyed by transaction id. The old code skipped already-matched
+      sources without emitting a result, then paired results with inputs by
+      list position, so discrepancies landed on the wrong transactions.
+    - The candidate set is everything unmatched within the lookback window,
+      not "the oldest 500 unmatched", which permanently starved new
+      transactions once 500 unmatchable ones accumulated.
+    - Missing-settlement detection is independent of which rows the matcher
+      happened to load.
 
 References:
     - TDD §10.4: Matching Flow
     - QA C-004, C-005
 """
+
 import json
-from datetime import datetime, timezone
+from datetime import timedelta
 from decimal import Decimal
-from uuid import uuid4
 from typing import Any
+from uuid import UUID
 
-from prefect import flow, task, get_run_logger
+import structlog
+from prefect import flow
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
-from src.engine.matching import (
-    TransactionCandidate, run_matching, MatchStrategy, DEFAULT_CONFIG,
+from src.engine.discrepancy import DiscrepancyType, classify_amount_discrepancy
+from src.engine.matching import MatchingConfig, MatchResult, MatchStrategy, TransactionCandidate, run_matching
+from src.observability.metrics import (
+    DISCREPANCIES_RAISED,
+    MATCHING_CONFIDENCE_HISTOGRAM,
+    MATCHING_RESULTS,
 )
-from src.engine.discrepancy import (
-    classify_missing_settlement, classify_amount_discrepancy,
-    DiscrepancyType,
-)
+from src.storage.pipeline_runs import finish_run, start_run
 from src.storage.postgres import pipeline_session
 
+log = structlog.get_logger(__name__)
 
-@task(name="fetch-unmatched-transactions", tags=["gold", "matching"])
-async def fetch_unmatched_transactions(
-    psp_name: str | None = None,
-    limit: int = 500,
-) -> list[dict]:
-    """Fetch Silver transactions not yet in gold_reconciliation_pairs."""
-    logger = get_run_logger()
+# Severity grows with how overdue a settlement is. Computed in SQL so the
+# whole backlog is classified in one statement; mirrors
+# src/engine/discrepancy.py::classify_missing_settlement.
+_MISSING_SETTLEMENT_SQL = text("""
+    WITH overdue AS (
+        SELECT s.id, s.amount_ngn, s.expected_settlement_at,
+               EXTRACT(EPOCH FROM (NOW() - s.expected_settlement_at)) / 3600 AS overdue_hours
+        FROM silver_canonical_transactions s
+        WHERE s.transaction_type IN ('credit', 'debit')
+          AND s.settlement_status = 'pending'
+          AND s.expected_settlement_at IS NOT NULL
+          AND s.expected_settlement_at < NOW()
+          AND NOT EXISTS (SELECT 1 FROM gold_matched_transactions m WHERE m.transaction_id = s.id)
+    ),
+    upserted AS (
+        INSERT INTO gold_discrepancies
+            (transaction_id, classification, severity, confidence_score,
+             estimated_exposure_ngn, evidence, dbt_run_id, status)
+        SELECT
+            o.id,
+            'missing_settlement'::discrepancy_class_enum,
+            CASE WHEN o.overdue_hours > 48 THEN 'critical'
+                 WHEN o.overdue_hours > 24 THEN 'high'
+                 ELSE 'medium' END,
+            1.0,
+            o.amount_ngn,
+            jsonb_build_object(
+                'expected_settlement_at', o.expected_settlement_at,
+                'overdue_hours', ROUND(o.overdue_hours::numeric, 2),
+                'amount_ngn', o.amount_ngn::text
+            ),
+            CAST(:run_id AS UUID),
+            'open'
+        FROM overdue o
+        ON CONFLICT (transaction_id, classification) DO UPDATE
+            SET severity = EXCLUDED.severity,
+                evidence = EXCLUDED.evidence,
+                updated_at = NOW()
+            WHERE gold_discrepancies.status = 'open'
+              AND gold_discrepancies.severity IS DISTINCT FROM EXCLUDED.severity
+        RETURNING id, (xmax = 0) AS inserted
+    )
+    INSERT INTO gold_discrepancy_events (discrepancy_id, action, from_status, to_status, actor)
+    SELECT id,
+           CASE WHEN inserted THEN 'raised' ELSE 'severity_changed' END,
+           CASE WHEN inserted THEN NULL ELSE 'open'::discrepancy_status_enum END,
+           'open'::discrepancy_status_enum,
+           'system:matching-flow'
+    FROM upserted
+    RETURNING discrepancy_id, action
+""")
+
+
+async def fetch_match_candidates(lookback: timedelta) -> list[TransactionCandidate]:
+    """Every unmatched, non-failed credit/debit initiated within the lookback window."""
     async with pipeline_session() as session:
-        psp_filter = "AND s.psp_name = :psp" if psp_name else ""
         result = await session.execute(
-            text(f"""
-                SELECT s.id, s.psp_name, s.transaction_type, s.amount_ngn,
-                       s.currency_raw, s.initiated_at, s.settled_at,
-                       s.beneficiary_name_masked, s.beneficiary_bank_code,
-                       s.sender_bank_code, s.expected_settlement_at,
-                       s.settlement_status
+            text("""
+                SELECT s.id, s.psp_name, s.transaction_type, s.amount_ngn, s.currency_raw,
+                       s.initiated_at, s.settled_at, s.counterparty_name_tokens,
+                       s.beneficiary_bank_code, s.sender_bank_code
                 FROM silver_canonical_transactions s
-                LEFT JOIN gold_reconciliation_pairs g1
-                    ON s.id = g1.transaction_a_id
-                LEFT JOIN gold_reconciliation_pairs g2
-                    ON s.id = g2.transaction_b_id
-                WHERE g1.id IS NULL AND g2.id IS NULL
-                {psp_filter}
-                ORDER BY s.initiated_at ASC
-                LIMIT :limit
+                WHERE s.transaction_type IN ('credit', 'debit')
+                  AND s.settlement_status <> 'failed'
+                  AND s.initiated_at >= NOW() - CAST(:lookback AS INTERVAL)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM gold_matched_transactions m WHERE m.transaction_id = s.id
+                  )
+                ORDER BY s.initiated_at, s.id
             """),
-            {"psp": psp_name, "limit": limit},
+            {"lookback": lookback},
         )
         rows = result.mappings().all()
-    logger.info(f"Fetched {len(rows)} unmatched transactions")
-    return [dict(r) for r in rows]
-
-
-@task(name="run-matching-engine", tags=["gold", "matching"])
-async def run_matching_engine_task(
-    unmatched: list[dict],
-) -> list[dict]:
-    """Run two-tier matching on all unmatched transactions."""
-    logger = get_run_logger()
-    results = []
-
-    candidates = [
+    return [
         TransactionCandidate(
-            id=tx["id"], psp_name=tx["psp_name"],
-            transaction_type=tx["transaction_type"],
-            amount_ngn=Decimal(str(tx["amount_ngn"])),
-            currency_raw=tx["currency_raw"],
-            initiated_at=tx["initiated_at"],
-            settled_at=tx.get("settled_at"),
-            beneficiary_name_masked=tx.get("beneficiary_name_masked"),
-            beneficiary_bank_code=tx.get("beneficiary_bank_code"),
-            sender_bank_code=tx.get("sender_bank_code"),
+            id=r["id"],
+            psp_name=r["psp_name"],
+            transaction_type=r["transaction_type"],
+            amount_ngn=Decimal(r["amount_ngn"]),
+            currency_raw=r["currency_raw"],
+            initiated_at=r["initiated_at"],
+            settled_at=r["settled_at"],
+            counterparty_name_tokens=list(r["counterparty_name_tokens"] or []),
+            beneficiary_bank_code=r["beneficiary_bank_code"],
+            sender_bank_code=r["sender_bank_code"],
         )
-        for tx in unmatched
+        for r in rows
     ]
 
-    matched_ids = set()
-    for i, tx_dict in enumerate(unmatched):
-        source = candidates[i]
-        if source.id in matched_ids:
+
+def match_all(candidates: list[TransactionCandidate], config: MatchingConfig) -> list[MatchResult]:
+    """
+    Greedy one-to-one matching in initiation order. Each transaction appears in
+    at most one returned pair; results are keyed by transaction ids, never by
+    list position.
+    """
+    matched: set[Any] = set()
+    pairs: list[MatchResult] = []
+    for source in candidates:
+        if source.id in matched:
             continue
-        available = [
-            c for c in candidates
-            if c.id != source.id and c.id not in matched_ids
-        ]
-        result = run_matching(source, available)
-        if result.matched_transaction_id is not None:
-            matched_ids.add(result.matched_transaction_id)
-            matched_ids.add(source.id)
-        results.append({
-            "source_id": result.source_transaction_id,
-            "matched_id": result.matched_transaction_id,
-            "strategy": result.strategy.value,
-            "confidence": result.confidence_score,
-            "evidence": result.confidence_evidence,
-            "amount_delta_ngn": str(result.amount_delta_ngn) if result.amount_delta_ngn else None,
-            "is_within_fx_threshold": result.is_within_fx_threshold,
-            "source_amount_ngn": str(tx_dict["amount_ngn"]),
-        })
-
-    matched_count = sum(1 for r in results if r["matched_id"] is not None)
-    logger.info(f"Matching complete: {matched_count}/{len(results)} matched")
-    return results
+        available = [c for c in candidates if c.id not in matched]
+        result = run_matching(source, available, config)
+        MATCHING_RESULTS.labels(strategy=result.strategy.value).inc()
+        if result.matched_transaction_id is None:
+            continue
+        matched.update({source.id, result.matched_transaction_id})
+        MATCHING_CONFIDENCE_HISTOGRAM.observe(result.confidence_score)
+        pairs.append(result)
+    return pairs
 
 
-@task(name="write-gold-pairs", tags=["gold", "storage"])
-async def write_gold_pairs(
-    match_results: list[dict],
-    run_id: str,
-) -> int:
-    """Write matched pairs to gold_reconciliation_pairs."""
-    logger = get_run_logger()
-    written = 0
-    async with pipeline_session() as session:
-        for r in match_results:
-            if r["matched_id"] is None:
-                continue
-            status = "matched" if r["strategy"] != "unmatched" else "unmatched"
-            await session.execute(
-                text("""
-                    INSERT INTO gold_reconciliation_pairs
-                        (transaction_a_id, transaction_b_id, match_strategy,
-                         confidence_score, amount_a_ngn, amount_delta_ngn,
-                         is_within_fx_threshold, status,
-                         match_evidence, dbt_run_id)
-                    VALUES
-                        (:a_id, :b_id, :strategy, :confidence,
-                         :amount_a, :delta, :fx_flag, :status,
-                         CAST(:evidence AS JSONB), :run_id)
-                    ON CONFLICT (transaction_a_id, transaction_b_id) DO NOTHING
-                """),
-                {
-                    "a_id": r["source_id"],
-                    "b_id": r["matched_id"],
-                    "strategy": r["strategy"],
-                    "confidence": r["confidence"],
-                    "amount_a": Decimal(r["source_amount_ngn"]),
-                    "delta": Decimal(r["amount_delta_ngn"]) if r["amount_delta_ngn"] else Decimal("0"),
-                    "fx_flag": r["is_within_fx_threshold"],
-                    "status": status,
-                    "evidence": json.dumps(r["evidence"]),
-                    "run_id": run_id,
-                },
-            )
-            written += 1
-    logger.info(f"Wrote {written} Gold reconciliation pairs")
-    return written
-
-
-@task(name="classify-discrepancies", tags=["gold", "discrepancy"])
-async def classify_and_write_discrepancies(
-    unmatched_txs: list[dict],
-    run_id: str,
-) -> int:
+async def persist_pairs(
+    pairs: list[MatchResult],
+    by_id: dict[Any, TransactionCandidate],
+    run_id: UUID,
+) -> tuple[int, int]:
     """
-    For unmatched transactions past their expected settlement,
-    classify and write discrepancies.
+    Write each pair (and its amount discrepancy, if any) in its own savepoint.
+    Returns (pairs_written, amount_discrepancies_raised).
     """
-    logger = get_run_logger()
-    now = datetime.now(timezone.utc)
     written = 0
-
+    raised = 0
     async with pipeline_session() as session:
-        for tx in unmatched_txs:
-            expected = tx.get("expected_settlement_at")
-            if expected is None:
-                continue
-            if tx.get("settlement_status") == "settled":
-                continue
-            result = classify_missing_settlement(
-                Decimal(str(tx["amount_ngn"])), expected, now,
-            )
-            if result.discrepancy_type is None:
-                continue
-            await session.execute(
-                text("""
-                    INSERT INTO gold_discrepancies
-                        (transaction_id, classification, severity,
-                         confidence_score, estimated_exposure_ngn, evidence,
-                         dbt_run_id, status)
-                    VALUES
-                        (:tx_id, CAST(:dtype AS discrepancy_class_enum), :severity,
-                         :confidence, :exposure, CAST(:evidence AS JSONB), :run_id, 'open')
-                    ON CONFLICT (transaction_id, classification) DO NOTHING
-                """),
-                {
-                    "tx_id": tx["id"],
-                    "dtype": result.discrepancy_type.value,
-                    "severity": result.severity.value,
-                    "confidence": 1.0,
-                    "exposure": result.estimated_exposure_ngn,
-                    "evidence": json.dumps(result.evidence),
-                    "run_id": run_id,
-                },
-            )
-            written += 1
-    logger.info(f"Wrote {written} Gold discrepancies")
-    return written
+        for r in pairs:
+            a, b = by_id[r.source_transaction_id], by_id[r.matched_transaction_id]
+            try:
+                async with session.begin_nested():
+                    pair_id: UUID = (
+                        await session.execute(
+                            text("""
+                            INSERT INTO gold_reconciliation_pairs
+                                (transaction_a_id, transaction_b_id, match_strategy,
+                                 confidence_score, amount_a_ngn, amount_b_ngn, amount_delta_ngn,
+                                 is_within_fx_threshold, status, match_evidence, dbt_run_id)
+                            VALUES
+                                (:a_id, :b_id, CAST(:strategy AS match_strategy_enum), :confidence,
+                                 :amount_a, :amount_b, :delta, :fx_flag,
+                                 CAST(:status AS pair_status_enum), CAST(:evidence AS JSONB), :run_id)
+                            RETURNING id
+                        """),
+                            {
+                                "a_id": a.id,
+                                "b_id": b.id,
+                                "strategy": r.strategy.value,
+                                "confidence": r.confidence_score,
+                                "amount_a": a.amount_ngn,
+                                "amount_b": b.amount_ngn,
+                                "delta": r.amount_delta_ngn or Decimal("0"),
+                                "fx_flag": r.is_within_fx_threshold,
+                                "status": "matched",
+                                "evidence": json.dumps(r.confidence_evidence, default=str),
+                                "run_id": run_id,
+                            },
+                        )
+                    ).scalar_one()
+                    await session.execute(
+                        text("""
+                            INSERT INTO gold_matched_transactions (transaction_id, pair_id)
+                            VALUES (:a_id, :pair_id), (:b_id, :pair_id)
+                        """),
+                        {"a_id": a.id, "b_id": b.id, "pair_id": pair_id},
+                    )
+                    if r.amount_delta_ngn and r.amount_delta_ngn > 0:
+                        raised += await _raise_amount_discrepancy(session, pair_id, a, b, run_id)
+                written += 1
+            except IntegrityError:
+                # Another run matched one of these transactions first.
+                log.info("matching.pair_conflict", a_id=str(a.id), b_id=str(b.id))
+    return written, raised
+
+
+async def _raise_amount_discrepancy(
+    session: Any,
+    pair_id: UUID,
+    a: TransactionCandidate,
+    b: TransactionCandidate,
+    run_id: UUID,
+) -> int:
+    rates = await session.execute(
+        text("SELECT id, fx_rate_applied FROM silver_canonical_transactions WHERE id IN (:a, :b)"),
+        {"a": a.id, "b": b.id},
+    )
+    fx = {row.id: row.fx_rate_applied for row in rates}
+    result = classify_amount_discrepancy(a.amount_ngn, b.amount_ngn, fx.get(a.id), fx.get(b.id))
+    if result.discrepancy_type is None or result.severity is None:
+        return 0
+    inserted = (
+        await session.execute(
+            text("""
+            INSERT INTO gold_discrepancies
+                (reconciliation_pair_id, transaction_id, classification, severity,
+                 confidence_score, estimated_exposure_ngn, evidence, dbt_run_id, status)
+            VALUES
+                (:pair_id, :tx_id, CAST(:dtype AS discrepancy_class_enum), :severity,
+                 1.0, :exposure, CAST(:evidence AS JSONB), :run_id, 'open')
+            ON CONFLICT (transaction_id, classification) DO NOTHING
+            RETURNING id
+        """),
+            {
+                "pair_id": pair_id,
+                "tx_id": a.id,
+                "dtype": result.discrepancy_type.value,
+                "severity": result.severity.value,
+                "exposure": result.estimated_exposure_ngn,
+                "evidence": json.dumps(result.evidence, default=str),
+                "run_id": run_id,
+            },
+        )
+    ).scalar_one_or_none()
+    if inserted is None:
+        return 0
+    await session.execute(
+        text("UPDATE gold_reconciliation_pairs SET status = 'discrepancy', updated_at = NOW() WHERE id = :id"),
+        {"id": pair_id},
+    )
+    await session.execute(
+        text("""
+            INSERT INTO gold_discrepancy_events (discrepancy_id, action, from_status, to_status, actor)
+            VALUES (:id, 'raised', NULL, 'open', 'system:matching-flow')
+        """),
+        {"id": inserted},
+    )
+    DISCREPANCIES_RAISED.labels(classification=result.discrepancy_type.value).inc()
+    return 1
+
+
+async def raise_missing_settlements(run_id: UUID) -> int:
+    """Classify every overdue, unmatched, still-pending transaction. Returns newly raised count."""
+    async with pipeline_session() as session:
+        rows = (await session.execute(_MISSING_SETTLEMENT_SQL, {"run_id": run_id})).all()
+    raised = sum(1 for r in rows if r.action == "raised")
+    if raised:
+        DISCREPANCIES_RAISED.labels(classification=DiscrepancyType.MISSING_SETTLEMENT.value).inc(raised)
+    return raised
+
+
+async def refresh_summary_view() -> None:
+    async with pipeline_session() as session:
+        await session.execute(text("SELECT refresh_reconciliation_summary()"))
 
 
 @flow(name="silver-to-gold-matching-flow", log_prints=True)
-async def silver_to_gold_matching_flow(
-    psp_name: str | None = None,
-    limit: int = 500,
-) -> dict:
+async def silver_to_gold_matching_flow() -> dict[str, Any]:
     """Orchestrate the full Silver → Gold matching pipeline."""
-    run_id = uuid4()
-
-    # Register start of pipeline run
-    async with pipeline_session() as session:
-        await session.execute(
-            text("""
-                INSERT INTO system_pipeline_runs (id, flow_name, status, triggered_by)
-                VALUES (:id, :flow_name, 'running', 'scheduler')
-            """),
-            {"id": run_id, "flow_name": "silver-to-gold-matching-flow"}
-        )
-
+    config = MatchingConfig.from_settings()
+    # Twice the widest window: a transaction can still be matched by a
+    # counterpart arriving up to one window later.
+    lookback = config.probabilistic_time_window * 2
+    run_id = await start_run("silver-to-gold-matching-flow", triggered_by="scheduler")
     try:
-        unmatched = await fetch_unmatched_transactions(psp_name, limit)
-        if not unmatched:
-            # Register successful completion of pipeline run (0 records)
-            async with pipeline_session() as session:
-                await session.execute(
-                    text("""
-                        UPDATE system_pipeline_runs
-                        SET status = 'completed', completed_at = NOW(), records_processed = 0
-                        WHERE id = :id
-                    """),
-                    {"id": run_id}
-                )
-            return {"run_id": str(run_id), "matched": 0, "discrepancies": 0}
+        candidates = await fetch_match_candidates(lookback)
+        pairs = match_all(candidates, config)
+        by_id = {c.id: c for c in candidates}
+        pairs_written, amount_discrepancies = await persist_pairs(pairs, by_id, run_id)
+        missing = await raise_missing_settlements(run_id)
+        await refresh_summary_view()
 
-        results = await run_matching_engine_task(unmatched)
-        pairs_written = await write_gold_pairs(results, str(run_id))
-        unmatched_txs = [
-            unmatched[i] for i, r in enumerate(results) if r["matched_id"] is None
-        ]
-        disc_written = await classify_and_write_discrepancies(unmatched_txs, str(run_id))
+        from src.alerting.slack import dispatch_pending_alerts
 
-        # Register successful completion of pipeline run
-        async with pipeline_session() as session:
-            await session.execute(
-                text("""
-                    UPDATE system_pipeline_runs
-                    SET status = 'completed', completed_at = NOW(), records_processed = :proc
-                    WHERE id = :id
-                """),
-                {"id": run_id, "proc": len(unmatched)}
-            )
-
-        return {
-            "run_id": str(run_id),
-            "total_processed": len(unmatched),
-            "matched": pairs_written,
-            "discrepancies": disc_written,
-            "unmatched_remaining": len(unmatched) - pairs_written,
-        }
-
-    except Exception as e:
-        import traceback
-        # Register failed pipeline run
-        async with pipeline_session() as session:
-            await session.execute(
-                text("""
-                    UPDATE system_pipeline_runs
-                    SET status = 'failed', completed_at = NOW(),
-                        error_message = :err, error_traceback = :tb
-                    WHERE id = :id
-                """),
-                {
-                    "id": run_id,
-                    "err": str(e),
-                    "tb": traceback.format_exc()
-                }
-            )
+        alerts_sent = await dispatch_pending_alerts()
+    except BaseException as e:
+        await finish_run(run_id, error=e)
         raise
+
+    summary = {
+        "run_id": str(run_id),
+        "candidates": len(candidates),
+        "pairs_written": pairs_written,
+        "transactions_matched": pairs_written * 2,
+        "amount_discrepancies_raised": amount_discrepancies,
+        "missing_settlements_raised": missing,
+        "alerts_sent": alerts_sent,
+        "strategies": {
+            s.value: sum(1 for p in pairs if p.strategy == s)
+            for s in (MatchStrategy.EXACT_PRIMARY, MatchStrategy.PROBABILISTIC_SECONDARY)
+        },
+    }
+    await finish_run(run_id, processed=len(candidates))
+    log.info("matching.completed", **summary)
+    return summary

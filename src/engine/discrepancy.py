@@ -17,14 +17,15 @@ References:
     - Correctness Property C-005
     - TDD §8.3: Discrepancy Classification
 """
+
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
+from typing import Any
 
 
-class DiscrepancyType(str, Enum):
+class DiscrepancyType(StrEnum):
     MISSING_SETTLEMENT = "missing_settlement"
     AMOUNT_MISMATCH = "amount_mismatch"
     FX_VARIANCE = "fx_variance"
@@ -32,41 +33,48 @@ class DiscrepancyType(str, Enum):
     LATE_SETTLEMENT = "late_settlement"
 
 
-class DiscrepancySeverity(str, Enum):
-    LOW = "low"       # FX variance within tolerance, late by < 1 hour
+class DiscrepancySeverity(StrEnum):
+    LOW = "low"  # FX variance within tolerance, late by < 1 hour
     MEDIUM = "medium"  # Amount mismatch < 1%, late by < 24 hours
-    HIGH = "high"      # Amount mismatch > 1%, missing settlement
+    HIGH = "high"  # Amount mismatch > 1%, missing settlement
     CRITICAL = "critical"  # Duplicate credit, missing > 48 hours
 
 
 @dataclass
 class DiscrepancyResult:
     """Result of classifying a potential discrepancy."""
-    discrepancy_type: Optional[DiscrepancyType]
-    severity: Optional[DiscrepancySeverity]
+
+    discrepancy_type: DiscrepancyType | None
+    severity: DiscrepancySeverity | None
     estimated_exposure_ngn: Decimal
-    evidence: dict
+    evidence: dict[str, Any]
     requires_action: bool
 
 
 # ── Amount Delta Classification ───────────────────────────────────────────────
 
-# Threshold: within 0.5% is considered FX timing noise
+# Threshold: within 0.5% is considered rounding/fee noise, not a discrepancy.
 AMOUNT_THRESHOLD_PCT = Decimal("0.005")
+
+# How closely the FX rate movement must account for the amount delta for the
+# delta to be classified as FX variance (absolute, in fraction points).
+FX_EXPLANATION_TOLERANCE_PCT = Decimal("0.0025")
 
 
 def classify_amount_delta(
     amount_a_ngn: Decimal,
     amount_b_ngn: Decimal,
-    fx_variance_pct: Optional[Decimal] = None,
-) -> tuple[Optional[str], bool]:
+    fx_variance_pct: Decimal | None = None,
+) -> tuple[str | None, bool]:
     """
     Classify the delta between two matched transaction amounts.
 
     Returns: (classification, is_within_threshold)
-        - None: amounts match within threshold, no discrepancy
-        - "AMOUNT_MISMATCH": delta exceeds threshold, not FX-explained
-        - "FX_VARIANCE": delta exceeds threshold but FX explains it
+        - None: amounts agree within AMOUNT_THRESHOLD_PCT
+        - "FX_VARIANCE": the delta is explained by the FX rate movement, i.e.
+          |delta_pct - fx_variance_pct| <= FX_EXPLANATION_TOLERANCE_PCT
+        - "AMOUNT_MISMATCH": anything else, including deltas far larger than
+          the rate movement (a 0.01% rate change cannot explain a 20% gap)
         - "MISSING_SETTLEMENT": amount_b is zero (never arrived)
     """
     if amount_b_ngn == 0:
@@ -76,10 +84,13 @@ def classify_amount_delta(
     delta_pct = delta / amount_a_ngn if amount_a_ngn > 0 else Decimal("0")
 
     if delta_pct <= AMOUNT_THRESHOLD_PCT:
-        return None, True  # Within tolerance
+        return None, True
 
-    # Check if FX explains the delta
-    if fx_variance_pct is not None and fx_variance_pct > 0:
+    if (
+        fx_variance_pct is not None
+        and fx_variance_pct > 0
+        and abs(delta_pct - fx_variance_pct) <= FX_EXPLANATION_TOLERANCE_PCT
+    ):
         return "FX_VARIANCE", False
 
     return "AMOUNT_MISMATCH", False
@@ -87,17 +98,18 @@ def classify_amount_delta(
 
 # ── Full Discrepancy Classification ───────────────────────────────────────────
 
+
 def classify_missing_settlement(
     amount_ngn: Decimal,
-    expected_settlement_at: Optional[datetime],
-    current_time: Optional[datetime] = None,
+    expected_settlement_at: datetime | None,
+    current_time: datetime | None = None,
 ) -> DiscrepancyResult:
     """
     Classify a transaction whose settlement is missing.
     C-005: Every transaction past expected_settlement_at without settlement
     must appear in gold_discrepancies.
     """
-    now = current_time or datetime.now(timezone.utc)
+    now = current_time or datetime.now(UTC)
 
     if expected_settlement_at is None:
         return DiscrepancyResult(
@@ -148,8 +160,8 @@ def classify_missing_settlement(
 def classify_amount_discrepancy(
     amount_a_ngn: Decimal,
     amount_b_ngn: Decimal,
-    fx_rate_a: Optional[Decimal] = None,
-    fx_rate_b: Optional[Decimal] = None,
+    fx_rate_a: Decimal | None = None,
+    fx_rate_b: Decimal | None = None,
 ) -> DiscrepancyResult:
     """
     Classify an amount discrepancy between matched transactions.
@@ -163,13 +175,12 @@ def classify_amount_discrepancy(
     if fx_rate_a and fx_rate_b and fx_rate_a > 0:
         fx_variance = abs(fx_rate_a - fx_rate_b) / fx_rate_a
 
-    classification, within_threshold = classify_amount_delta(
-        amount_a_ngn, amount_b_ngn, fx_variance
-    )
+    classification, _within_threshold = classify_amount_delta(amount_a_ngn, amount_b_ngn, fx_variance)
 
     if classification is None:
         return DiscrepancyResult(
-            discrepancy_type=None, severity=None,
+            discrepancy_type=None,
+            severity=None,
             estimated_exposure_ngn=Decimal("0"),
             evidence={"delta_pct": f"{float(delta_pct):.4f}", "within_threshold": True},
             requires_action=False,

@@ -19,10 +19,10 @@ References:
     - TDD §9.5: Schema Contracts
     - ERD §6.5: silver_canonical_transactions constraints
 """
+
 import pandas as pd
 import pandera
 import pytest
-from datetime import datetime, timezone
 
 from src.contracts.silver.canonical_schema import SILVER_CANONICAL_SCHEMA
 
@@ -174,7 +174,7 @@ class TestSilverSchemaEnumValidation:
 
     def test_all_valid_currencies(self):
         """All supported currencies should pass."""
-        for currency in ["NGN", "USD", "GBP", "EUR", "KES", "GHS", "ZAR"]:
+        for currency in ["NGN", "USD", "GBP", "EUR"]:
             row = _valid_silver_row()
             row["currency_raw"] = currency
             df = pd.DataFrame([row])
@@ -286,4 +286,3 @@ class TestSilverSchemaFXCrossField:
         df = pd.DataFrame([row])
         result = SILVER_CANONICAL_SCHEMA.validate(df)
         assert len(result) == 1
-

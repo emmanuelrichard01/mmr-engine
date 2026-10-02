@@ -6,32 +6,26 @@ Create Date: 2026-05-04
 
 Reference: ERD §6.1 — Database Setup and Extensions
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
 
 revision: str = "000"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # pgcrypto — gen_random_uuid()
-    op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
-    # pg_trgm — trigram indexes for fuzzy name matching
-    op.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
-    # btree_gist — range overlap indexes for time windows
-    op.execute('CREATE EXTENSION IF NOT EXISTS "btree_gist"')
-    # NOTE: pgaudit (CBN audit trail) is NOT included here because:
-    #   1. It's not bundled with the stock postgres:16 Docker image
-    #   2. PostgreSQL aborts the whole transaction if CREATE EXTENSION fails
-    # For production: use a custom image with pgaudit, then run:
-    #   CREATE EXTENSION IF NOT EXISTS "pgaudit";
-    #   SET pgaudit.log = 'write, ddl';
+    # No extensions are required:
+    #   - gen_random_uuid() is built into PostgreSQL 13+ (pgcrypto not needed)
+    #   - name matching runs in Python on keyed tokens (pg_trgm is unused)
+    #   - no exclusion constraints use btree_gist
+    # Earlier revisions created all three; requiring unused contrib modules
+    # only made the schema harder to install (e.g. on minimal Postgres builds).
+    # pgaudit is a deployment choice (custom image + shared_preload_libraries),
+    # not something a migration can enable; see README limitations.
+    pass
 
 
 def downgrade() -> None:
-    op.execute('DROP EXTENSION IF EXISTS "btree_gist"')
-    op.execute('DROP EXTENSION IF EXISTS "pg_trgm"')
-    op.execute('DROP EXTENSION IF EXISTS "pgcrypto"')
+    pass

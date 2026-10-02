@@ -1,244 +1,158 @@
 # src/alerting/slack.py
 """
-Slack Alert Dispatcher.
+Slack alerting for discrepancies that need a human.
 
-Sends structured alerts to a Slack channel via webhook.
-Triggered by the reconciliation pipeline when:
-    - Critical/High severity discrepancy detected
-    - Open exposure exceeds configurable threshold
-    - Gap detection finds missing transactions
-    - Settlement is overdue by >24 hours
+`dispatch_pending_alerts()` runs at the end of every matching run. It picks
+open discrepancies not yet alerted whose severity is critical, or whose
+estimated exposure is at or above ALERT_EXPOSURE_THRESHOLD_NGN, posts one
+Slack message per discrepancy, and records each attempt in
+system_alert_events. A discrepancy is marked alerted only after Slack
+accepted the message, so failed sends are retried on the next run.
 
-All alerts are logged to system_alert_events for audit compliance.
+When SLACK_WEBHOOK_URL is not configured, nothing is sent and nothing is
+marked: the alerts remain pending and visible in the dashboard.
 
 References:
     - TDD §12: Alerting Subsystem
-    - Data Governance §8: Incident Response
-    - API Specification §6: Alert Events
 """
+
 import json
-from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 import structlog
+from sqlalchemy import text
 
 from src.config import get_settings
+from src.observability.metrics import ALERTS_DISPATCHED_COUNTER
 from src.storage.postgres import pipeline_session
-
-from sqlalchemy import text
 
 log = structlog.get_logger(__name__)
 
+MAX_ALERTS_PER_RUN = 20
 
-class SlackAlertDispatcher:
-    """
-    Sends alerts to Slack and logs them to the audit trail.
+_SEVERITY_EMOJI = {
+    "critical": ":rotating_light:",
+    "high": ":warning:",
+    "medium": ":large_yellow_circle:",
+    "low": ":information_source:",
+}
 
-    Usage:
-        dispatcher = SlackAlertDispatcher()
-        await dispatcher.send_discrepancy_alert(discrepancy)
-        await dispatcher.send_exposure_alert(psp_name, exposure_ngn)
-    """
 
-    def __init__(self):
-        settings = get_settings()
-        self._webhook_url = settings.slack_webhook_url
-        self._channel = getattr(settings, "slack_channel", "#reconciliation-alerts")
-        self._enabled = bool(self._webhook_url)
-
-    async def send_discrepancy_alert(
-        self,
-        discrepancy_type: str,
-        severity: str,
-        psp_name: str,
-        amount_ngn: Decimal,
-        transaction_ref: str,
-        evidence: dict[str, Any],
-    ) -> bool:
-        """Send alert for a new discrepancy."""
-        severity_emoji = {
-            "critical": ":rotating_light:",
-            "high": ":warning:",
-            "medium": ":large_yellow_circle:",
-            "low": ":information_source:",
-        }
-
-        blocks = [
+def build_discrepancy_message(d: dict[str, Any]) -> dict[str, Any]:
+    """Slack Block Kit payload for one discrepancy. Contains no PII: only
+    the PSP reference, amount and classification."""
+    severity = str(d.get("severity") or "unknown")
+    amount = Decimal(d["estimated_exposure_ngn"]).quantize(Decimal("0.01"))
+    return {
+        "text": f"{severity.upper()} {d['classification']} on {d['psp_name']}: NGN {amount:,}",
+        "blocks": [
             {
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": f"{severity_emoji.get(severity, ':bell:')} Discrepancy Detected — {severity.upper()}",
+                    "text": f"{_SEVERITY_EMOJI.get(severity, ':bell:')} Discrepancy — {severity.upper()}",
                 },
             },
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Type:*\n{discrepancy_type}"},
-                    {"type": "mrkdwn", "text": f"*PSP:*\n{psp_name}"},
-                    {"type": "mrkdwn", "text": f"*Amount:*\nNGN {amount_ngn:,.2f}"},
-                    {"type": "mrkdwn", "text": f"*Ref:*\n`{transaction_ref}`"},
+                    {"type": "mrkdwn", "text": f"*Type:*\n{d['classification']}"},
+                    {"type": "mrkdwn", "text": f"*PSP:*\n{d['psp_name']}"},
+                    {"type": "mrkdwn", "text": f"*Exposure:*\nNGN {amount:,}"},
+                    {"type": "mrkdwn", "text": f"*Ref:*\n`{d['psp_transaction_ref']}`"},
                 ],
             },
             {
                 "type": "context",
                 "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"Detected at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-                    },
+                    {"type": "mrkdwn", "text": f"Discrepancy `{d['id']}` raised {d['raised_at']:%Y-%m-%d %H:%M} UTC"}
                 ],
             },
-        ]
+        ],
+    }
 
-        sent = await self._send_to_slack(blocks)
 
-        # Log to audit trail
-        await self._log_alert_event(
-            alert_type="discrepancy",
-            severity=severity,
-            payload={
-                "discrepancy_type": discrepancy_type,
-                "psp_name": psp_name,
-                "amount_ngn": str(amount_ngn),
-                "transaction_ref": transaction_ref,
-            },
-            delivered=sent,
-        )
+async def dispatch_pending_alerts() -> int:
+    """Send Slack alerts for qualifying, not-yet-alerted discrepancies. Returns the number sent."""
+    settings = get_settings()
+    if settings.slack_webhook_url is None:
+        log.debug("alerts.skipped", reason="SLACK_WEBHOOK_URL not configured")
+        return 0
+    webhook_url = settings.slack_webhook_url.get_secret_value()
 
-        return sent
-
-    async def send_exposure_alert(
-        self,
-        psp_name: str,
-        total_exposure_ngn: Decimal,
-        open_discrepancy_count: int,
-        threshold_ngn: Decimal,
-    ) -> bool:
-        """Send alert when open exposure exceeds threshold."""
-        blocks = [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": ":chart_with_upwards_trend: Exposure Threshold Breached",
-                },
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*PSP:*\n{psp_name}"},
-                    {"type": "mrkdwn", "text": f"*Open Exposure:*\nNGN {total_exposure_ngn:,.2f}"},
-                    {"type": "mrkdwn", "text": f"*Threshold:*\nNGN {threshold_ngn:,.2f}"},
-                    {"type": "mrkdwn", "text": f"*Open Items:*\n{open_discrepancy_count}"},
-                ],
-            },
-        ]
-
-        sent = await self._send_to_slack(blocks)
-        await self._log_alert_event(
-            alert_type="exposure_threshold",
-            severity="high",
-            payload={
-                "psp_name": psp_name,
-                "total_exposure_ngn": str(total_exposure_ngn),
-                "threshold_ngn": str(threshold_ngn),
-            },
-            delivered=sent,
-        )
-        return sent
-
-    async def send_gap_detection_alert(
-        self,
-        psp_name: str,
-        gaps_found: int,
-        gap_rate_pct: float,
-        auto_backfilled: int,
-    ) -> bool:
-        """Send alert when gap detection finds missing transactions."""
-        blocks = [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": ":mag: Webhook Gap Detected",
-                },
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*PSP:*\n{psp_name}"},
-                    {"type": "mrkdwn", "text": f"*Gaps Found:*\n{gaps_found}"},
-                    {"type": "mrkdwn", "text": f"*Gap Rate:*\n{gap_rate_pct:.2f}%"},
-                    {"type": "mrkdwn", "text": f"*Auto-Backfilled:*\n{auto_backfilled}"},
-                ],
-            },
-        ]
-
-        sent = await self._send_to_slack(blocks)
-        await self._log_alert_event(
-            alert_type="gap_detection",
-            severity="high" if gap_rate_pct > 1.0 else "medium",
-            payload={
-                "psp_name": psp_name,
-                "gaps_found": gaps_found,
-                "gap_rate_pct": gap_rate_pct,
-            },
-            delivered=sent,
-        )
-        return sent
-
-    async def _send_to_slack(self, blocks: list[dict]) -> bool:
-        """Send a message to Slack via webhook."""
-        if not self._enabled:
-            log.info("slack.disabled", reason="No webhook URL configured")
-            return False
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    self._webhook_url,
-                    json={"channel": self._channel, "blocks": blocks},
-                    timeout=10.0,
+    async with pipeline_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    text("""
+                SELECT d.id, d.classification::text AS classification, d.severity,
+                       d.estimated_exposure_ngn, d.raised_at,
+                       s.psp_name::text AS psp_name, s.psp_transaction_ref
+                FROM gold_discrepancies d
+                JOIN silver_canonical_transactions s ON s.id = d.transaction_id
+                WHERE d.status = 'open'
+                  AND d.has_alert_sent = FALSE
+                  AND (d.severity = 'critical' OR d.estimated_exposure_ngn >= :threshold)
+                ORDER BY d.estimated_exposure_ngn DESC
+                LIMIT :limit
+            """),
+                    {"threshold": Decimal(str(settings.alert_exposure_threshold_ngn)), "limit": MAX_ALERTS_PER_RUN},
                 )
-                if response.status_code == 200:
-                    log.info("slack.alert_sent")
-                    return True
-                else:
-                    log.error("slack.send_failed", status=response.status_code)
-                    return False
-        except Exception as e:
-            log.error("slack.send_error", error=str(e))
-            return False
+            )
+            .mappings()
+            .all()
+        )
 
-    async def _log_alert_event(
-        self,
-        alert_type: str,
-        severity: str,
-        payload: dict,
-        delivered: bool,
-    ) -> None:
-        """Log alert to system_alert_events for audit compliance."""
-        try:
+    sent = 0
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for row in rows:
+            d = dict(row)
+            message = build_discrepancy_message(d)
+            failure: str | None = None
+            try:
+                response = await client.post(webhook_url, json=message)
+                if response.status_code != 200:
+                    failure = f"slack responded {response.status_code}"
+            except httpx.HTTPError as e:
+                # The webhook URL is a secret: log the error type only.
+                failure = type(e).__name__
+
             async with pipeline_session() as session:
                 await session.execute(
                     text("""
                         INSERT INTO system_alert_events
-                            (alert_type, severity, channel, payload, delivered_at)
+                            (discrepancy_id, alert_channel, alert_type, recipient, payload,
+                             status, sent_at, failure_reason)
                         VALUES
-                            (:alert_type, :severity, :channel,
-                             CAST(:payload AS JSONB),
-                             CASE WHEN :delivered THEN NOW() ELSE NULL END)
+                            (:id, 'slack', :alert_type, 'slack-webhook', CAST(:payload AS JSONB),
+                             CAST(:status AS alert_status_enum),
+                             CASE WHEN :failed THEN NULL ELSE NOW() END, :failure)
                     """),
                     {
-                        "alert_type": alert_type,
-                        "severity": severity,
-                        "channel": "slack",
-                        "payload": json.dumps(payload),
-                        "delivered": delivered,
+                        "id": d["id"],
+                        "alert_type": d["classification"],
+                        "payload": json.dumps(message),
+                        "status": "failed" if failure else "sent",
+                        "failed": failure is not None,
+                        "failure": failure,
                     },
                 )
-        except Exception as e:
-            log.error("alert.audit_log_failed", error=str(e))
+                if failure is None:
+                    await session.execute(
+                        text("""
+                            UPDATE gold_discrepancies
+                            SET has_alert_sent = TRUE, alert_sent_at = NOW(), updated_at = NOW()
+                            WHERE id = :id
+                        """),
+                        {"id": d["id"]},
+                    )
+
+            outcome = "failed" if failure else "sent"
+            ALERTS_DISPATCHED_COUNTER.labels(channel="slack", outcome=outcome).inc()
+            if failure:
+                log.warning("alerts.send_failed", discrepancy_id=str(d["id"]), reason=failure)
+            else:
+                sent += 1
+    return sent

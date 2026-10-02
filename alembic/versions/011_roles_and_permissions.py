@@ -6,16 +6,37 @@ Create Date: 2026-05-04
 
 Reference: ERD §7 — Database Role Permissions
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
+
 from alembic import op
 
 revision: str = "011"
-down_revision: Union[str, None] = "010"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "010"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Roles are normally created (with LOGIN + passwords) by
+    # scripts/init_postgres.sql. Create them here as NOLOGIN if absent so a
+    # bare Postgres (CI, tests) can run every migration; credentials stay
+    # an environment concern and never live in migrations.
+    op.execute("""
+        DO $$
+        DECLARE r TEXT;
+        BEGIN
+            FOREACH r IN ARRAY ARRAY['reconciliation_pipeline', 'reconciliation_api_user',
+                                     'reconciliation_readonly', 'reconciliation_dbt']
+            LOOP
+                IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = r) THEN
+                    EXECUTE format('CREATE ROLE %I NOLOGIN', r);
+                END IF;
+            END LOOP;
+        END
+        $$
+    """)
+
     # Pipeline role: reads all, writes Bronze/Silver/Gold/System
     op.execute("GRANT SELECT ON ALL TABLES IN SCHEMA public TO reconciliation_pipeline")
     op.execute("""
@@ -74,6 +95,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for role in ["reconciliation_pipeline", "reconciliation_api_user",
-                 "reconciliation_dbt", "reconciliation_readonly"]:
+    for role in ["reconciliation_pipeline", "reconciliation_api_user", "reconciliation_dbt", "reconciliation_readonly"]:
         op.execute(f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {role}")

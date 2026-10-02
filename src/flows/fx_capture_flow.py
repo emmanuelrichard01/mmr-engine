@@ -16,11 +16,12 @@ References:
     - TDD §9.3: FX Rate Engine
     - TDD §10.3: Scheduled Flows
 """
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
-from prefect import flow, task, get_run_logger
-from prefect.tasks import task_input_hash
+from prefect import flow, get_run_logger, task
 
 from src.engine.fx import capture_fx_rates
 from src.storage.postgres import pipeline_session
@@ -32,7 +33,7 @@ from src.storage.postgres import pipeline_session
     retry_delay_seconds=[30, 60, 120],
     tags=["fx", "external-api"],
 )
-async def capture_fx_rates_task() -> list[dict]:
+async def capture_fx_rates_task() -> list[dict[str, str]]:
     """
     Capture FX rates for all supported pairs.
     Retries with increasing backoff — external API may be rate-limited.
@@ -42,10 +43,7 @@ async def capture_fx_rates_task() -> list[dict]:
     async with pipeline_session() as session:
         snapshots = await capture_fx_rates(session)
 
-    logger.info(
-        f"Captured {len(snapshots)} FX rate snapshots: "
-        f"{[s['pair'] for s in snapshots]}"
-    )
+    logger.info(f"Captured {len(snapshots)} FX rate snapshots: {[s['pair'] for s in snapshots]}")
     return snapshots
 
 
@@ -53,7 +51,7 @@ async def capture_fx_rates_task() -> list[dict]:
     name="fx-rate-capture-flow",
     log_prints=True,
 )
-async def fx_rate_capture_flow() -> dict:
+async def fx_rate_capture_flow() -> dict[str, Any]:
     """
     Scheduled flow to capture FX rates.
     Deploy with:
@@ -71,7 +69,7 @@ async def fx_rate_capture_flow() -> dict:
 
     return {
         "run_id": str(run_id),
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "snapshots_count": len(snapshots),
         "snapshots": snapshots,
     }

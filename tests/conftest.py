@@ -7,8 +7,6 @@ Provides:
     - Reusable PSP payload fixtures
     - Common test data factories
 """
-import os
-from unittest.mock import patch
 
 import pytest
 
@@ -31,12 +29,14 @@ def mock_env_vars(monkeypatch):
         "FLUTTERWAVE_SECRET_HASH": "test_flw_hash",
         "FX_PROVIDER_API_KEY": "test_fx_key",
         "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
+        "PII_TOKENIZATION_KEY": "test-tokenization-key-0123456789abcdef",
     }
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
 
     # Clear the lru_cache so each test gets fresh settings
     from src.config import get_settings
+
     get_settings.cache_clear()
 
 

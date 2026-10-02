@@ -14,6 +14,7 @@ References:
     - TDD §8.1: Abstract Base
     - API Specification §3.1: Webhook Endpoints
 """
+
 import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass

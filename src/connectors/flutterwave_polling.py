@@ -14,7 +14,9 @@ References:
     - TDD §10.2: Polling Fallback Flow
     - Flutterwave API: https://developer.flutterwave.com/reference
 """
-from typing import Any, Optional
+
+from datetime import datetime
+from typing import Any, cast
 
 import httpx
 import structlog
@@ -22,6 +24,8 @@ import structlog
 from src.config import get_settings
 
 log = structlog.get_logger(__name__)
+
+MAX_PAGES = 200  # hard stop per call
 
 
 class FlutterwaveAPIClient:
@@ -36,7 +40,7 @@ class FlutterwaveAPIClient:
     def __init__(self) -> None:
         settings = get_settings()
         self._headers = {
-            "Authorization": f"Bearer {settings.flutterwave_secret_key}",
+            "Authorization": f"Bearer {settings.flutterwave_secret_key.get_secret_value()}",
             "Content-Type": "application/json",
         }
         self._timeout = 10.0
@@ -62,7 +66,7 @@ class FlutterwaveAPIClient:
                 transaction_id=transaction_id,
                 status=data.get("data", {}).get("status"),
             )
-            return data["data"]
+            return cast(dict[str, Any], data["data"])
 
     async def verify_transaction_by_ref(self, tx_ref: str) -> dict[str, Any]:
         """
@@ -84,12 +88,12 @@ class FlutterwaveAPIClient:
                 tx_ref=tx_ref,
                 status=data.get("data", {}).get("status"),
             )
-            return data["data"]
+            return cast(dict[str, Any], data["data"])
 
     async def list_transactions(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
         status: str = "successful",
         page: int = 1,
     ) -> list[dict[str, Any]]:
@@ -123,12 +127,12 @@ class FlutterwaveAPIClient:
                 count=len(data.get("data", [])),
                 page=page,
             )
-            return data.get("data", [])
+            return cast(list[dict[str, Any]], data.get("data", []))
 
     async def list_settlements(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
         page: int = 1,
     ) -> list[dict[str, Any]]:
         """
@@ -161,46 +165,43 @@ class FlutterwaveAPIClient:
                 "flutterwave.api.settlements_listed",
                 count=len(data.get("data", {}).get("data", [])),
             )
-            return data.get("data", {}).get("data", [])
+            return cast(list[dict[str, Any]], data.get("data", {}).get("data", []))
 
-    async def fetch_missing_transactions(
-        self,
-        known_tx_refs: set[str],
-        from_date: str,
-        to_date: str,
-    ) -> list[dict[str, Any]]:
+    async def list_all_successful(self, since: datetime, until: datetime) -> list[dict[str, Any]]:
         """
-        Gap detection: find transactions in Flutterwave's records
-        that we don't have in our system.
+        Every successful transaction created in [since, until].
+
+        The API filters by calendar date (YYYY-MM-DD) and paginates with
+        meta.page_info, so pages are walked until total_pages and results
+        are trimmed to the exact window client-side.
         """
-        missing = []
+        results: list[dict[str, Any]] = []
         page = 1
-
-        while True:
-            transactions = await self.list_transactions(
-                from_date=from_date,
-                to_date=to_date,
-                page=page,
-            )
-
-            if not transactions:
-                break
-
-            for tx in transactions:
-                tx_ref = tx.get("tx_ref", "")
-                if tx_ref and tx_ref not in known_tx_refs:
-                    missing.append(tx)
-
-            if len(transactions) < 20:  # Flutterwave default page size
-                break
+        while page <= MAX_PAGES:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/transactions",
+                    headers=self._headers,
+                    params={
+                        "status": "successful",
+                        "from": since.strftime("%Y-%m-%d"),
+                        "to": until.strftime("%Y-%m-%d"),
+                        "page": page,
+                    },
+                    timeout=self._timeout,
+                )
+            response.raise_for_status()
+            body = response.json()
+            for tx in body.get("data") or []:
+                created = tx.get("created_at")
+                if not created:
+                    continue
+                created_at = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                if since <= created_at <= until:
+                    results.append(tx)
+            total_pages = int(((body.get("meta") or {}).get("page_info") or {}).get("total_pages") or 1)
+            if page >= total_pages:
+                return results
             page += 1
-
-        if missing:
-            log.warning(
-                "flutterwave.api.missing_transactions_found",
-                count=len(missing),
-                from_date=from_date,
-                to_date=to_date,
-            )
-
-        return missing
+        log.warning("flutterwave.api.page_limit_reached", pages=MAX_PAGES)
+        return results

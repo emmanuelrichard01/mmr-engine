@@ -4,13 +4,15 @@ Revision ID: 014
 Revises: 013
 Create Date: 2026-05-21
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
+
 from alembic import op
 
 revision: str = "014"
-down_revision: Union[str, None] = "013"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "013"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -19,7 +21,17 @@ def upgrade() -> None:
         ALTER TABLE gold_discrepancies
         ADD COLUMN severity VARCHAR(50) CHECK (severity IN ('low', 'medium', 'high', 'critical'))
     """)
-    # 2. Add unique constraint on (transaction_id, classification)
+    # 2. Remove duplicates (keep the earliest) so the constraint can be added
+    #    to databases that already accumulated them, then add the constraint.
+    #    One discrepancy per (transaction, classification) ever: resolving
+    #    one is final and must not be re-raised by the next pipeline run.
+    op.execute("""
+        DELETE FROM gold_discrepancies a
+        USING gold_discrepancies b
+        WHERE a.transaction_id = b.transaction_id
+          AND a.classification = b.classification
+          AND (a.raised_at, a.id) > (b.raised_at, b.id)
+    """)
     op.execute("""
         ALTER TABLE gold_discrepancies
         ADD CONSTRAINT uq_discrepancies_tx_class UNIQUE (transaction_id, classification)

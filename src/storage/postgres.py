@@ -11,8 +11,9 @@ References:
     - TDD §7.1: PostgreSQL — Async Session Factory
     - ERD §7: Database Role Permissions
 """
+
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 import structlog
 from sqlalchemy.ext.asyncio import (
@@ -35,9 +36,9 @@ def _build_engine(dsn: str, pool_size: int = 10, max_overflow: int = 20) -> Asyn
         str(dsn),
         pool_size=pool_size,
         max_overflow=max_overflow,
-        pool_pre_ping=True,     # Verify connection health before checkout
-        pool_recycle=3600,      # Recycle connections hourly (prevents stale connections)
-        echo=settings.debug,    # SQL logging in debug mode only — never in production
+        pool_pre_ping=True,  # Verify connection health before checkout
+        pool_recycle=3600,  # Recycle connections hourly (prevents stale connections)
+        echo=settings.debug,  # SQL logging in debug mode only — never in production
     )
 
 

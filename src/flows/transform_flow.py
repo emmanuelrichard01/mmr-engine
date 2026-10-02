@@ -1,91 +1,101 @@
 # src/flows/transform_flow.py
 """
-Bronze-to-Silver Transform Flow.
+Bronze-to-Silver transform, executed by the consumer worker for each message.
 
-Consumes messages from Kafka, writes immutable Bronze Parquet to MinIO,
-normalises to the canonical Silver schema, validates with Pandera,
-and writes to PostgreSQL.
+    Kafka message → Bronze Parquet (MinIO, always) → classify →
+    normalise → Pandera validate → Silver (Postgres)
 
-Pipeline:
-    Kafka message → Bronze Parquet (MinIO) → Normalise → Pandera validate → Silver (PG)
+Every message is written to Bronze, including events the engine does not
+model, so the raw record is always available for audit and replay. Only
+events that `classify_event` accepts become Silver rows.
 
-Each step is a Prefect task with independent retry logic:
-    - Bronze write: retries 3x (MinIO may be briefly unavailable)
-    - Silver normalise: retries 2x (DB deadlocks, FX rate capture)
+This is a plain coroutine rather than a Prefect flow per message: creating a
+flow run per event added a hard dependency on the Prefect API and seconds of
+overhead per message, for no orchestration benefit. Retries and dead-lettering
+are owned by the consumer worker, which knows the Kafka offsets.
 
 References:
     - TDD §10.2: Bronze to Silver Flow
 """
+
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 import pandas as pd
-import pandera
 import pyarrow as pa
-from prefect import flow, task, get_run_logger
+import structlog
 from sqlalchemy import text
 
-from src.config import get_settings
-from src.engine.fx import get_fx_rate_at, capture_fx_rates
+from src.contracts.silver.canonical_schema import SILVER_CANONICAL_SCHEMA
+from src.engine.fx import capture_fx_rates, get_fx_rate_at
 from src.engine.normaliser import (
-    normalise_paystack_event,
-    normalise_flutterwave_event,
-    PAYSTACK_EVENT_TYPE_MAP,
-    FLUTTERWAVE_EVENT_TYPE_MAP,
+    NORMALISERS,
+    PermanentEventError,
+    classify_event,
+    parse_timestamp,
 )
 from src.engine.settlement import compute_expected_settlement
-from src.contracts.silver.canonical_schema import SILVER_CANONICAL_SCHEMA
+from src.observability.metrics import BRONZE_RECORDS_WRITTEN, EVENTS_SKIPPED, SILVER_RECORDS_WRITTEN
 from src.storage.minio_client import MinIOClient
 from src.storage.postgres import pipeline_session
-from src.observability.metrics import SILVER_RECORDS_WRITTEN
 
+log = structlog.get_logger(__name__)
 
-@task(
-    name="write-bronze-parquet",
-    retries=3,
-    retry_delay_seconds=[5, 15, 45],
-    tags=["bronze", "storage"],
+# Columns validated by Pandera (identifiers, lineage and JSON blobs excluded).
+_UNVALIDATED_COLUMNS = frozenset(
+    {
+        "id",
+        "processed_by_run_id",
+        "psp_metadata",
+        "bronze_ingestion_id",
+        "psp_event_received_at",
+        "fx_rate_applied",
+        "counterparty_name_tokens",
+    }
 )
+
+
 async def write_bronze_parquet(
     psp_name: str,
     kafka_message: dict[str, Any],
     run_id: UUID,
 ) -> tuple[str, UUID]:
     """
-    Write raw Kafka message payload to Bronze Parquet on MinIO.
-    Returns (file_path, bronze_ingestion_id).
-    Registers the file in bronze_ingestion_log.
+    Write the raw message payload to Bronze Parquet on MinIO and register it
+    in bronze_ingestion_log. Returns (file_path, bronze_ingestion_id).
+
+    Replays of the same Kafka offset reuse the existing log row; the object
+    key is derived from the offset so a replay overwrites rather than orphans.
     """
-    logger = get_run_logger()
-    now = datetime.now(timezone.utc)
-    ingestion_id = str(uuid4())
+    now = datetime.now(UTC)
+    topic = kafka_message.get("kafka_topic", f"raw.{psp_name}.events")
+    partition = int(kafka_message.get("kafka_partition", 0))
+    offset = int(kafka_message.get("kafka_offset", -1))
 
-    # Build PyArrow table from raw payload
-    table_data = {
-        "_ingestion_id": [ingestion_id],
-        "_received_at": [now],
-        "_source_type": [kafka_message.get("source_type", "webhook")],
-        "_content_hash": [kafka_message["content_hash"]],
-        "_kafka_offset": [kafka_message.get("kafka_offset", -1)],
-        "event": [kafka_message["event_type"]],
-        "data": [json.dumps(kafka_message["payload"])],
-    }
-    table = pa.table(table_data)
+    table = pa.table(
+        {
+            "_ingestion_id": [str(uuid4())],
+            "_received_at": [now],
+            "_source_type": [kafka_message.get("source_type", "webhook")],
+            "_content_hash": [kafka_message["content_hash"]],
+            "_kafka_offset": [offset],
+            "event": [kafka_message["event_type"]],
+            "data": [json.dumps(kafka_message["payload"])],
+        }
+    )
 
-    # Write to MinIO (synchronous client — run in thread)
     client = MinIOClient()
     file_path = await asyncio.to_thread(
         client.write_parquet,
         table=table,
         psp_name=psp_name,
         event_date=now,
-        run_id=str(run_id),
+        run_id=f"{topic}-p{partition}-o{offset}",
     )
 
-    # Register in bronze_ingestion_log
     async with pipeline_session() as session:
         result = await session.execute(
             text("""
@@ -96,94 +106,80 @@ async def write_bronze_parquet(
                 VALUES
                     (:psp_name, :source_type, :topic, :partition,
                      :offset, :hash, :path, 1, :run_id, 'written')
-                ON CONFLICT (kafka_topic, kafka_partition, kafka_offset)
-                DO UPDATE SET status = EXCLUDED.status
+                ON CONFLICT (kafka_topic, kafka_partition, kafka_offset) DO NOTHING
                 RETURNING id, file_path
             """),
             {
                 "psp_name": psp_name,
                 "source_type": kafka_message.get("source_type", "webhook"),
-                "topic": kafka_message.get("kafka_topic", f"raw.{psp_name}.events"),
-                "partition": kafka_message.get("kafka_partition", 0),
-                "offset": kafka_message.get("kafka_offset", 0),
+                "topic": topic,
+                "partition": partition,
+                "offset": offset,
                 "hash": kafka_message["content_hash"],
                 "path": file_path,
                 "run_id": run_id,
             },
         )
-        row = result.one()
-        bronze_ingestion_id = row[0]
-        actual_file_path = row[1]
+        row = result.one_or_none()
+        if row is None:
+            # Redelivery of an offset already logged (the log is append-only).
+            existing = await session.execute(
+                text("""
+                    SELECT id, file_path FROM bronze_ingestion_log
+                    WHERE kafka_topic = :topic AND kafka_partition = :partition AND kafka_offset = :offset
+                """),
+                {"topic": topic, "partition": partition, "offset": offset},
+            )
+            row = existing.one()
+        bronze_ingestion_id: UUID = row[0]
+        actual_file_path: str = row[1]
 
-    logger.info(f"Bronze written: {actual_file_path} (ingestion_id={bronze_ingestion_id})")
+    BRONZE_RECORDS_WRITTEN.labels(psp_name=psp_name).inc()
     return actual_file_path, bronze_ingestion_id
 
 
-@task(
-    name="normalise-to-silver",
-    retries=2,
-    retry_delay_seconds=[10, 30],
-    tags=["silver", "transform"],
-)
+async def _resolve_fx_rate(session: Any, currency_raw: str, initiated_at: datetime) -> tuple[UUID | None, Any]:
+    if currency_raw == "NGN":
+        return None, None
+    currency_pair = f"NGN/{currency_raw}"
+    fx_result = await get_fx_rate_at(session, currency_pair, initiated_at)
+    if fx_result is None:
+        log.warning("transform.fx_rate_missing", pair=currency_pair, at=initiated_at.isoformat())
+        await capture_fx_rates(session)
+        fx_result = await get_fx_rate_at(session, currency_pair, initiated_at)
+    if fx_result is None:
+        raise PermanentEventError(f"no FX rate for {currency_pair} at or shortly after {initiated_at.isoformat()}")
+    return fx_result
+
+
 async def normalise_to_silver(
     psp_name: str,
     payload: dict[str, Any],
     event_type: str,
     bronze_ingestion_id: UUID,
     run_id: UUID,
-) -> UUID:
+) -> tuple[UUID, bool]:
     """
-    Transform Bronze payload to canonical Silver schema.
-    1. Capture FX rate at event time (if non-NGN)
-    2. Compute expected settlement time
-    3. Apply PSP-specific normaliser
-    4. Validate against Pandera Silver schema
-    5. Write to silver_canonical_transactions
-    Returns silver_canonical_transactions.id
+    Normalise, validate and write one event to silver_canonical_transactions.
+    Returns (silver_id, is_new). Duplicate deliveries return the existing id.
     """
-    logger = get_run_logger()
+    normaliser = NORMALISERS[psp_name]
+    data = payload.get("data") or {}
 
     async with pipeline_session() as session:
-        # Step 1: FX rate capture
-        initiated_at = _extract_initiated_at(psp_name, payload)
-        currency_raw = payload.get("data", {}).get("currency", "NGN").upper()
-        fx_rate_snapshot_id = None
-        fx_rate_applied = None
+        initiated_at = parse_timestamp(data.get("paid_at") or data.get("created_at") or data.get("createdAt"))
+        currency_raw = str(data.get("currency") or "NGN").upper()
+        fx_rate_snapshot_id, fx_rate_applied = await _resolve_fx_rate(session, currency_raw, initiated_at)
 
-        if currency_raw != "NGN":
-            currency_pair = f"NGN/{currency_raw}"
-            fx_result = await get_fx_rate_at(session, currency_pair, initiated_at)
-            if fx_result:
-                fx_rate_snapshot_id, fx_rate_applied = fx_result
-            else:
-                logger.warning(
-                    f"No FX rate for {currency_pair} at {initiated_at}. "
-                    f"Triggering fresh capture."
-                )
-                await capture_fx_rates(session)
-                fx_result = await get_fx_rate_at(session, currency_pair, initiated_at)
-                if fx_result:
-                    fx_rate_snapshot_id, fx_rate_applied = fx_result
-
-        # Step 2: Expected settlement time
-        tx_type = _extract_transaction_type(psp_name, event_type)
+        disposition = classify_event(psp_name, event_type, payload)
         expected_settlement_at = await compute_expected_settlement(
             session=session,
             psp_name=psp_name,
-            transaction_type=tx_type,
+            transaction_type=disposition.transaction_type or "credit",
             initiated_at=initiated_at,
         )
 
-        # Step 3: PSP-specific normalisation
-        normaliser_map = {
-            "paystack": normalise_paystack_event,
-            "flutterwave": normalise_flutterwave_event,
-        }
-        normaliser = normaliser_map.get(psp_name)
-        if not normaliser:
-            raise ValueError(f"No normaliser registered for PSP: {psp_name}")
-
-        canonical_record = normaliser(
+        record = normaliser(
             payload=payload,
             bronze_ingestion_id=bronze_ingestion_id,
             run_id=run_id,
@@ -192,25 +188,11 @@ async def normalise_to_silver(
             expected_settlement_at=expected_settlement_at,
         )
 
-        # Step 4: Pandera schema validation
-        validation_cols = {
-            k: v for k, v in canonical_record.items()
-            if k not in ("id", "processed_by_run_id", "psp_metadata",
-                         "bronze_ingestion_id", "psp_event_received_at",
-                         "fx_rate_snapshot_id", "fx_rate_applied")
-        }
-        df = pd.DataFrame([validation_cols])
-        try:
-            SILVER_CANONICAL_SCHEMA.validate(df)
-        except pandera.errors.SchemaError as e:
-            logger.error(f"Silver schema validation failed: {e}")
-            raise
+        SILVER_CANONICAL_SCHEMA.validate(
+            pd.DataFrame([{k: v for k, v in record.items() if k not in _UNVALIDATED_COLUMNS}])
+        )
 
-        # Step 5: Write to Silver
-        # Serialize psp_metadata to JSON string for JSONB cast
-        record = {**canonical_record}
-        record["psp_metadata"] = json.dumps(record["psp_metadata"])
-
+        params = {**record, "psp_metadata": json.dumps(record["psp_metadata"])}
         result = await session.execute(
             text("""
                 INSERT INTO silver_canonical_transactions
@@ -221,6 +203,7 @@ async def normalise_to_silver(
                      sender_account_masked, sender_bank_code, sender_bank_name,
                      beneficiary_account_masked, beneficiary_bank_code,
                      beneficiary_bank_name, beneficiary_name_masked,
+                     counterparty_name_tokens,
                      narration, initiated_at, settled_at, expected_settlement_at,
                      settlement_status, has_pii_masked, psp_metadata,
                      processed_by_run_id)
@@ -232,130 +215,65 @@ async def normalise_to_silver(
                      :sender_account_masked, :sender_bank_code, :sender_bank_name,
                      :beneficiary_account_masked, :beneficiary_bank_code,
                      :beneficiary_bank_name, :beneficiary_name_masked,
+                     :counterparty_name_tokens,
                      :narration, :initiated_at, :settled_at, :expected_settlement_at,
                      :settlement_status, :has_pii_masked, CAST(:psp_metadata AS JSONB),
                      :processed_by_run_id)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING id
             """),
-            record,
+            params,
         )
         silver_id = result.scalar_one_or_none()
+        if silver_id is not None:
+            SILVER_RECORDS_WRITTEN.labels(psp_name=psp_name).inc()
+            return silver_id, True
 
-        if silver_id is None:
-            logger.warning(
-                f"Silver write skipped — idempotency key already exists: "
-                f"{canonical_record['idempotency_key']}"
-            )
-            existing = await session.execute(
-                text("SELECT id FROM silver_canonical_transactions "
-                     "WHERE idempotency_key = :key"),
-                {"key": canonical_record["idempotency_key"]},
-            )
-            silver_id = existing.scalar_one()
-
-        SILVER_RECORDS_WRITTEN.labels(psp_name=psp_name).inc()
-        logger.info(f"Silver record written: {silver_id}")
-        return silver_id
+        existing = await session.execute(
+            text("SELECT id FROM silver_canonical_transactions WHERE idempotency_key = :key"),
+            {"key": record["idempotency_key"]},
+        )
+        return existing.scalar_one(), False
 
 
-@flow(
-    name="bronze-to-silver-flow",
-    log_prints=True,
-)
-async def bronze_to_silver_flow(kafka_message: dict[str, Any]) -> dict:
+_REQUIRED_MESSAGE_FIELDS = ("psp_name", "event_type", "payload", "content_hash")
+
+
+async def process_kafka_message(kafka_message: dict[str, Any], run_id: UUID) -> dict[str, Any]:
     """
-    Orchestrates the Bronze → Silver pipeline for a single Kafka message.
-    Triggered by the Kafka consumer after message receipt.
+    Bronze → Silver for one Kafka message. `run_id` is the consumer's
+    system_pipeline_runs row, which every Bronze/Silver row references.
+
+    Raises PermanentEventError (or pandera SchemaError) for events that can
+    never succeed; any other exception is treated as transient by the caller.
     """
-    run_id = uuid4()
-    psp_name = kafka_message["psp_name"]
-    event_type = kafka_message["event_type"]
+    missing = [f for f in _REQUIRED_MESSAGE_FIELDS if f not in kafka_message]
+    if missing:
+        raise PermanentEventError(f"kafka message missing fields {missing}")
+    psp_name = str(kafka_message["psp_name"])
+    event_type = str(kafka_message["event_type"])
     payload = kafka_message["payload"]
+    if not isinstance(payload, dict):
+        raise PermanentEventError("kafka message payload is not an object")
 
-    # Register start of pipeline run
-    async with pipeline_session() as session:
-        await session.execute(
-            text("""
-                INSERT INTO system_pipeline_runs (id, flow_name, status, triggered_by)
-                VALUES (:id, :flow_name, 'running', 'consumer_worker')
-            """),
-            {"id": run_id, "flow_name": "bronze-to-silver-flow"}
-        )
+    _, bronze_ingestion_id = await write_bronze_parquet(psp_name, kafka_message, run_id)
 
-    try:
-        # Step 1: Write Bronze Parquet
-        file_path, bronze_ingestion_id = await write_bronze_parquet(
-            psp_name=psp_name,
-            kafka_message=kafka_message,
-            run_id=run_id,
-        )
+    disposition = classify_event(psp_name, event_type, payload)
+    if not disposition.process:
+        EVENTS_SKIPPED.labels(psp_name=psp_name).inc()
+        log.info("transform.skipped", psp_name=psp_name, event_type=event_type, reason=disposition.reason)
+        return {"outcome": "skipped", "reason": disposition.reason, "bronze_ingestion_id": str(bronze_ingestion_id)}
 
-        # Step 2: Normalise to Silver
-        silver_id = await normalise_to_silver(
-            psp_name=psp_name,
-            payload=payload,
-            event_type=event_type,
-            bronze_ingestion_id=bronze_ingestion_id,
-            run_id=run_id,
-        )
-
-        # Register successful completion of pipeline run
-        async with pipeline_session() as session:
-            await session.execute(
-                text("""
-                    UPDATE system_pipeline_runs
-                    SET status = 'completed', completed_at = NOW(), records_processed = 1
-                    WHERE id = :id
-                """),
-                {"id": run_id}
-            )
-
-        return {
-            "run_id": str(run_id),
-            "bronze_ingestion_id": str(bronze_ingestion_id),
-            "silver_transaction_id": str(silver_id),
-            "psp_name": psp_name,
-        }
-
-    except Exception as e:
-        import traceback
-        # Register failed pipeline run
-        async with pipeline_session() as session:
-            await session.execute(
-                text("""
-                    UPDATE system_pipeline_runs
-                    SET status = 'failed', completed_at = NOW(), records_failed = 1,
-                        error_message = :err, error_traceback = :tb
-                    WHERE id = :id
-                """),
-                {
-                    "id": run_id,
-                    "err": str(e),
-                    "tb": traceback.format_exc()
-                }
-            )
-        raise
-
-
-def _extract_initiated_at(psp_name: str, payload: dict) -> datetime:
-    """Extract the event initiation timestamp from the PSP payload."""
-    data = payload.get("data", {})
-    if psp_name == "paystack":
-        ts = data.get("paid_at") or data.get("created_at")
-    elif psp_name == "flutterwave":
-        ts = data.get("created_at")
-    else:
-        ts = data.get("timestamp")
-    if not ts:
-        return datetime.now(timezone.utc)
-    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-
-def _extract_transaction_type(psp_name: str, event_type: str) -> str:
-    """Map PSP event type to canonical transaction type."""
-    type_map = {
-        "paystack": PAYSTACK_EVENT_TYPE_MAP,
-        "flutterwave": FLUTTERWAVE_EVENT_TYPE_MAP,
+    silver_id, is_new = await normalise_to_silver(
+        psp_name=psp_name,
+        payload=payload,
+        event_type=event_type,
+        bronze_ingestion_id=bronze_ingestion_id,
+        run_id=run_id,
+    )
+    return {
+        "outcome": "written" if is_new else "duplicate",
+        "bronze_ingestion_id": str(bronze_ingestion_id),
+        "silver_transaction_id": str(silver_id),
+        "psp_name": psp_name,
     }
-    return type_map.get(psp_name, {}).get(event_type, "credit")

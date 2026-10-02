@@ -14,7 +14,6 @@ References:
     - TDD §9.2: PII Masking Engine
     - Data Architecture §5: PII Handling
 """
-import pytest
 
 from src.engine.pii import (
     mask_account_number,
@@ -170,9 +169,7 @@ class TestScrubNarration:
 
     def test_multiple_pii_patterns(self):
         """Multiple PII patterns should all be redacted."""
-        result = scrub_narration(
-            "Send to 0123456789 phone 08012345678 email test@email.com"
-        )
+        result = scrub_narration("Send to 0123456789 phone 08012345678 email test@email.com")
         assert "0123456789" not in result
         assert "08012345678" not in result
         assert "test@email.com" not in result

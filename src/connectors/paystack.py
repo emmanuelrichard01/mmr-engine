@@ -21,6 +21,7 @@ References:
     - TDD §8.2: Paystack Connector
     - Paystack API Docs: https://paystack.com/docs/payments/webhooks
 """
+
 import hashlib
 import hmac
 from typing import Any
@@ -58,17 +59,19 @@ class PaystackConnector(BasePSPConnector):
         Uses hmac.compare_digest for constant-time comparison
         to prevent timing attacks.
         """
+        if not signature_header:
+            return False
         settings = get_settings()
         expected = hmac.new(
-            key=settings.paystack_secret_key.encode("utf-8"),
+            key=settings.paystack_secret_key.get_secret_value().encode("utf-8"),
             msg=raw_body,
             digestmod=hashlib.sha512,
         ).hexdigest()
-        return hmac.compare_digest(expected, signature_header)
+        return hmac.compare_digest(expected.encode("ascii"), signature_header.lower().encode("utf-8"))
 
     def extract_event_type(self, payload: dict[str, Any]) -> str:
         """Extract event type from Paystack payload root."""
-        return payload.get("event", "unknown")
+        return str(payload.get("event") or "unknown")
 
     def is_handled_event(self, event_type: str) -> bool:
         """Check if this event type should be processed to Silver."""
@@ -76,4 +79,4 @@ class PaystackConnector(BasePSPConnector):
 
     def extract_transaction_ref(self, payload: dict[str, Any]) -> str:
         """Extract the PSP transaction reference from the payload."""
-        return payload.get("data", {}).get("reference", "")
+        return str((payload.get("data") or {}).get("reference") or "")

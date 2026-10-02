@@ -10,9 +10,8 @@ References:
     - TDD §9.5: Schema Contracts
     - Data Architecture §5: Bronze Layer
 """
-import pandera as pa
-from pandera import Column, DataFrameSchema, Check
 
+from pandera.pandas import Check, Column, DataFrameSchema
 
 FLUTTERWAVE_BRONZE_SCHEMA = DataFrameSchema(
     columns={
@@ -31,6 +30,5 @@ FLUTTERWAVE_BRONZE_SCHEMA = DataFrameSchema(
     strict=False,
     coerce=True,
     name="flutterwave_bronze",
-    description="Validates minimum structural requirements for Flutterwave "
-    "Bronze records before Silver promotion.",
+    description="Validates minimum structural requirements for Flutterwave Bronze records before Silver promotion.",
 )

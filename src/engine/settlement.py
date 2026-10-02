@@ -16,8 +16,8 @@ References:
     - ERD §6.5: silver_psp_settlement_windows
     - Data Dictionary: Settlement SLA Fields
 """
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+
+from datetime import UTC, datetime, timedelta, timezone
 
 import structlog
 from sqlalchemy import text
@@ -35,7 +35,7 @@ async def compute_expected_settlement(
     transaction_type: str,
     initiated_at: datetime,
     account_tier: str = "standard",
-) -> Optional[datetime]:
+) -> datetime | None:
     """
     Compute expected settlement time for a transaction.
 
@@ -81,32 +81,20 @@ async def compute_expected_settlement(
     settlement_days = row.settlement_days
     cutoff_time_wat = row.cutoff_time_wat
 
-    # Convert initiated_at to WAT for cutoff comparison
+    # Cutoff is a WAT wall-clock time: initiated after it → next cycle.
     initiated_wat = initiated_at.astimezone(WAT)
-
-    # Check if initiated after daily cutoff
     cutoff_extra_hours = 0.0
-    if cutoff_time_wat is not None:
-        cutoff_dt = initiated_wat.replace(
-            hour=cutoff_time_wat.hour,
-            minute=cutoff_time_wat.minute,
-            second=0,
-            microsecond=0,
+    if cutoff_time_wat is not None and initiated_wat.time() > cutoff_time_wat:
+        cutoff_extra_hours = 24.0
+        log.debug(
+            "settlement.after_cutoff",
+            psp_name=psp_name,
+            initiated_wat=initiated_wat.isoformat(),
+            cutoff=str(cutoff_time_wat),
         )
-        if initiated_wat.time() > cutoff_time_wat:
-            # After cutoff → settlement rolls to next cycle
-            cutoff_extra_hours = 24.0
-            log.debug(
-                "settlement.after_cutoff",
-                psp_name=psp_name,
-                initiated_wat=initiated_wat.isoformat(),
-                cutoff=str(cutoff_time_wat),
-            )
 
-    total_hours = lag_hours + cutoff_extra_hours
-    expected_at = initiated_at + timedelta(hours=total_hours)
+    expected_at = initiated_at + timedelta(hours=lag_hours + cutoff_extra_hours)
 
-    # If business days only, skip weekends
     if settlement_days == "business":
         expected_at = _skip_weekends(expected_at)
 
@@ -115,12 +103,14 @@ async def compute_expected_settlement(
 
 def _skip_weekends(dt: datetime) -> datetime:
     """
-    If dt falls on a weekend, advance to Monday 09:00 WAT.
-    Saturday (5) → Monday, Sunday (6) → Monday.
+    If dt falls on a Saturday or Sunday in WAT, move it to the following
+    Monday at 09:00 WAT. Public holidays are not modelled (see README
+    limitations).
     """
-    weekday = dt.weekday()
-    if weekday == 5:  # Saturday
-        dt += timedelta(days=2)
-    elif weekday == 6:  # Sunday
-        dt += timedelta(days=1)
-    return dt
+    local = dt.astimezone(WAT)
+    weekday = local.weekday()
+    if weekday < 5:
+        return dt
+    days_ahead = 7 - weekday  # Saturday (5) → 2, Sunday (6) → 1
+    monday = (local + timedelta(days=days_ahead)).replace(hour=9, minute=0, second=0, microsecond=0)
+    return monday.astimezone(dt.tzinfo or UTC)

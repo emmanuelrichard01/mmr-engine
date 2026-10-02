@@ -2,45 +2,52 @@
 """
 API Key Authentication Middleware.
 
-Validates API keys against the system_api_keys table.
-Keys are stored as SHA-256 hashes — the raw key is never persisted.
+Validates the X-API-Key header against system_api_keys, where keys are stored
+as SHA-256 hashes (the raw key is never persisted).
 
-Roles:
-    - admin: full read/write access + key management
-    - analyst: read access + discrepancy resolution
-    - readonly: read-only dashboard access
+Roles are derived from the key's scopes:
+    admin scope  → admin    (everything)
+    write scope  → analyst  (read + discrepancy resolution)
+    read scope   → readonly
+
+Fail-closed: a request without a valid key is rejected. The only exception is
+API_AUTH_DISABLED=true, which Settings refuses unless ENVIRONMENT=development.
+
+Errors are returned as responses, not raised: an HTTPException raised inside
+BaseHTTPMiddleware bypasses FastAPI's exception handlers and surfaces as a 500.
 
 References:
     - API Specification §2.1: Authentication
-    - Data Governance §4.4: Access Control
     - ERD §6.2: system_api_keys table
 """
-import hashlib
-from datetime import datetime, timezone
-from typing import Optional
 
-from fastapi import Request, HTTPException
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import Response
-from sqlalchemy import text
+import hashlib
+from datetime import UTC, datetime
 
 import structlog
+from fastapi import Request
+from sqlalchemy import text
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import JSONResponse, Response
 
+from src.config import get_settings
+from src.observability.metrics import AUTH_FAILURES_COUNTER
 from src.storage.postgres import api_session
 
 log = structlog.get_logger(__name__)
 
-# Paths that don't require authentication
-PUBLIC_PATHS = {
-    "/health",
-    "/health/ready",
-    "/metrics",
-    "/docs",
-    "/openapi.json",
-    "/v1/webhooks/paystack",
-    "/v1/webhooks/flutterwave",
-    "/v1/webhooks/mpesa",
-}
+# Exact paths that never require a key. Webhooks authenticate by PSP signature.
+PUBLIC_PATHS = frozenset(
+    {
+        "/health",
+        "/health/ready",
+        "/metrics",
+        "/v1/webhooks/paystack",
+        "/v1/webhooks/flutterwave",
+    }
+)
+# Interactive docs are public only outside production (they are disabled there).
+DOCS_PATHS = frozenset({"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"})
 
 
 def _hash_api_key(raw_key: str) -> str:
@@ -48,102 +55,100 @@ def _hash_api_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
+def role_from_scopes(scopes: list[str] | None) -> str:
+    """Map stored scopes to the API role used by `require_role`."""
+    granted = set(scopes or [])
+    if "admin" in granted:
+        return "admin"
+    if "write" in granted:
+        return "analyst"
+    return "readonly"
+
+
+def is_public_path(path: str, environment: str) -> bool:
+    normalised = path.rstrip("/") or "/"
+    if normalised in PUBLIC_PATHS:
+        return True
+    return environment != "production" and normalised in DOCS_PATHS
+
+
+def _reject(status_code: int, reason: str, detail: str) -> JSONResponse:
+    AUTH_FAILURES_COUNTER.labels(reason=reason).inc()
+    return JSONResponse(status_code=status_code, content={"detail": detail})
+
+
 class APIKeyAuthMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware that validates X-API-Key header on protected routes.
+    """Validates X-API-Key on every non-public route."""
 
-    Public paths (health, metrics, webhooks) are excluded.
-    Webhook endpoints use HMAC validation instead.
-    CORS preflight (OPTIONS) requests are always passed through.
-    """
-
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        # ── Always pass CORS preflight requests ──────────────────────
-        # Browsers send OPTIONS before any cross-origin fetch.
-        # These never carry auth headers — blocking them breaks CORS entirely.
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # CORS preflight never carries credentials.
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        # ── Skip auth for public paths ───────────────────────────────
-        path = request.url.path.rstrip("/")
-        if path in PUBLIC_PATHS or path.startswith("/v1/webhooks/") or path.startswith("/v1/onboarding"):
+        settings = get_settings()
+        if is_public_path(request.url.path, settings.environment):
             return await call_next(request)
 
-        # Extract API key from header
         api_key = request.headers.get("X-API-Key")
         if not api_key:
-            # In development/demo mode, allow unauthenticated access
-            # to reconciliation endpoints so the dashboard works without
-            # needing a pre-provisioned API key.
-            from src.config import get_settings
-            settings = get_settings()
-            if settings.environment == "development":
-                # Attach a default demo context
+            if settings.api_auth_disabled:
+                # Development only (enforced by Settings).
                 request.state.api_key_id = None
-                request.state.api_key_name = "demo"
-                request.state.api_role = "admin"
+                request.state.api_key_name = "dev-unauthenticated"
+                request.state.api_role = "analyst"
                 return await call_next(request)
+            return _reject(401, "missing_key", "Missing X-API-Key header")
 
-            raise HTTPException(
-                status_code=401,
-                detail="Missing X-API-Key header",
-            )
-
-        # Validate key against database
-        key_hash = _hash_api_key(api_key)
         try:
             async with api_session() as session:
-                result = await session.execute(
-                    text("""
-                        SELECT id, key_name, role, is_active, expires_at
-                        FROM system_api_keys
+                row = (
+                    (
+                        await session.execute(
+                            text("""
+                        UPDATE system_api_keys
+                        SET last_used_at = NOW(), usage_count = usage_count + 1
                         WHERE key_hash = :key_hash
+                        RETURNING id, client_name, scopes, is_active, expires_at
                     """),
-                    {"key_hash": key_hash},
+                            {"key_hash": _hash_api_key(api_key)},
+                        )
+                    )
+                    .mappings()
+                    .first()
                 )
-                row = result.mappings().first()
         except Exception as e:
-            log.error("auth.db_error", error=str(e))
-            raise HTTPException(status_code=503, detail="Auth service unavailable")
+            log.error("auth.db_error", error_type=type(e).__name__)
+            return JSONResponse(status_code=503, content={"detail": "Auth service unavailable"})
 
-        if not row:
-            log.warning("auth.invalid_key", key_prefix=api_key[:8])
-            raise HTTPException(status_code=401, detail="Invalid API key")
-
+        if row is None:
+            log.warning("auth.invalid_key")
+            return _reject(401, "invalid_key", "Invalid API key")
         if not row["is_active"]:
-            raise HTTPException(status_code=403, detail="API key deactivated")
+            return _reject(403, "inactive_key", "API key deactivated")
+        if row["expires_at"] is not None and row["expires_at"] < datetime.now(UTC):
+            return _reject(403, "expired_key", "API key expired")
 
-        if row["expires_at"] and row["expires_at"] < datetime.now(timezone.utc):
-            raise HTTPException(status_code=403, detail="API key expired")
-
-        # Attach auth context to request state
         request.state.api_key_id = row["id"]
-        request.state.api_key_name = row["key_name"]
-        request.state.api_role = row["role"]
-
-        log.info(
-            "auth.authenticated",
-            key_name=row["key_name"],
-            role=row["role"],
-        )
-
+        request.state.api_key_name = row["client_name"]
+        request.state.api_role = role_from_scopes(row["scopes"])
         return await call_next(request)
 
 
-def require_role(allowed_roles: list[str]):
+def require_role(allowed_roles: list[str]):  # type: ignore[no-untyped-def]  # FastAPI dependency factory
     """
-    Dependency to enforce role-based access on specific endpoints.
+    Dependency enforcing role-based access on specific endpoints.
 
     Usage:
         @router.get("/admin/keys", dependencies=[Depends(require_role(["admin"]))])
     """
-    async def _check_role(request: Request):
+    from fastapi import HTTPException
+
+    async def _check_role(request: Request) -> None:
         role = getattr(request.state, "api_role", None)
         if role not in allowed_roles:
             raise HTTPException(
                 status_code=403,
                 detail=f"Insufficient permissions. Required: {allowed_roles}",
             )
+
     return _check_role

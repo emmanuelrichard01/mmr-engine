@@ -1,63 +1,57 @@
 # tests/unit/test_rate_limit.py
-"""
-Rate limiter unit tests.
+"""Token bucket, bounded bucket store, and role limits."""
 
-References:
-    - API Specification §2.3: Rate Limiting
-"""
-import pytest
-import time
-
-from src.api.middleware.rate_limit import TokenBucket, ROLE_LIMITS
+from src.api.middleware.rate_limit import ROLE_LIMITS, BucketStore, TokenBucket
 
 
 class TestTokenBucket:
-    """Test the token bucket implementation."""
+    def test_starts_full(self):
+        assert TokenBucket(capacity=10).remaining == 10
 
-    def test_initial_tokens_equal_capacity(self):
-        bucket = TokenBucket(capacity=10)
-        assert bucket.remaining == 10
+    def test_exhausts_then_rejects(self):
+        b = TokenBucket(capacity=3, last_refill=0.0)
+        assert [b.consume(now=0.0) for _ in range(4)] == [True, True, True, False]
 
-    def test_consume_decrements(self):
-        bucket = TokenBucket(capacity=10)
-        assert bucket.consume() is True
-        assert bucket.remaining == 9
-
-    def test_exhausted_bucket_rejects(self):
-        bucket = TokenBucket(capacity=2)
-        bucket.consume()
-        bucket.consume()
-        assert bucket.consume() is False
-
-    def test_refill_over_time(self):
-        bucket = TokenBucket(capacity=60)
-        # Consume all tokens
+    def test_refills_at_capacity_per_minute(self):
+        b = TokenBucket(capacity=60, last_refill=0.0)
         for _ in range(60):
-            bucket.consume()
-        assert bucket.remaining == 0
-        # Simulate 1 second passing (should refill 1 token at 60/min)
-        bucket.last_refill -= 1.0
-        assert bucket.consume() is True
+            b.consume(now=0.0)
+        assert b.consume(now=0.0) is False
+        assert b.consume(now=1.0) is True  # 60/min = 1 token per second
 
-    def test_refill_does_not_exceed_capacity(self):
-        bucket = TokenBucket(capacity=10)
-        # Simulate 10 minutes passing
-        bucket.last_refill -= 600
-        bucket.consume()  # Triggers refill
-        assert bucket.remaining <= 10
+    def test_refill_capped_at_capacity(self):
+        b = TokenBucket(capacity=5, last_refill=0.0)
+        b.consume(now=10_000.0)
+        assert b.remaining == 4
+
+    def test_clock_going_backwards_does_not_mint_tokens(self):
+        b = TokenBucket(capacity=2, last_refill=100.0)
+        b.consume(now=100.0)
+        b.consume(now=100.0)
+        assert b.consume(now=50.0) is False
 
 
-class TestRoleLimits:
-    """Verify role limit configuration."""
+class TestBucketStore:
+    def test_lru_bound_prevents_unbounded_growth(self):
+        """Regression: one bucket per client IP was kept forever."""
+        store = BucketStore(max_buckets=100)
+        for i in range(1000):
+            store.get(f"ip:10.0.{i // 256}.{i % 256}", capacity=30)
+        assert len(store) == 100
 
-    def test_admin_highest_limit(self):
-        assert ROLE_LIMITS["admin"] > ROLE_LIMITS["analyst"]
-        assert ROLE_LIMITS["analyst"] > ROLE_LIMITS["readonly"]
+    def test_recently_used_bucket_survives_eviction(self):
+        store = BucketStore(max_buckets=2)
+        hot = store.get("hot", 5)
+        store.get("a", 5)
+        store.get("hot", 5)
+        store.get("b", 5)
+        assert store.get("hot", 5) is hot
 
-    def test_all_roles_defined(self):
-        for role in ["admin", "analyst", "readonly"]:
-            assert role in ROLE_LIMITS
+    def test_capacity_change_resets_bucket(self):
+        store = BucketStore(max_buckets=10)
+        assert store.get("k", 5).capacity == 5
+        assert store.get("k", 50).capacity == 50
 
-    def test_limits_are_positive(self):
-        for role, limit in ROLE_LIMITS.items():
-            assert limit > 0, f"Limit for {role} must be positive"
+
+def test_role_limits_ordered():
+    assert ROLE_LIMITS["admin"] > ROLE_LIMITS["analyst"] > ROLE_LIMITS["readonly"] > 0

@@ -11,6 +11,7 @@ Tests verify:
 References:
     - TDD §9.3: FX Rate Engine
 """
+
 from decimal import Decimal
 
 import pytest
