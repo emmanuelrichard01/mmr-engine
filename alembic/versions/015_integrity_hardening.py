@@ -137,6 +137,11 @@ def upgrade() -> None:
         ADD COLUMN counterparty_name_tokens TEXT[] NOT NULL DEFAULT '{}'
     """)
 
+    # M-Pesa was never implemented; drop its seeded settlement windows (012).
+    # The 'mpesa' value stays in psp_name_enum: PostgreSQL cannot drop enum
+    # values, and no code path accepts it (see canonical_schema.SUPPORTED_PSPS).
+    op.execute("DELETE FROM silver_psp_settlement_windows WHERE psp_name = 'mpesa'")
+
     # ── 2. One-to-one match guarantee ────────────────────────────────────
     op.execute("""
         CREATE TABLE gold_matched_transactions (
@@ -278,6 +283,15 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS fn_block_mutation()")
     op.execute("DROP TABLE IF EXISTS gold_matched_transactions")
     op.execute("ALTER TABLE silver_canonical_transactions DROP COLUMN IF EXISTS counterparty_name_tokens")
+    op.execute("""
+        INSERT INTO silver_psp_settlement_windows
+            (psp_name, transaction_type, account_tier, settlement_lag_hours, settlement_days,
+             cutoff_time_wat, effective_from, notes)
+        VALUES
+            ('mpesa', 'credit', 'standard', 1.5, 'calendar', NULL, '2026-01-01', 'M-Pesa real-time: ~90 minutes max'),
+            ('mpesa', 'debit', 'standard', 1.5, 'calendar', NULL, '2026-01-01', 'M-Pesa real-time: ~90 minutes max')
+        ON CONFLICT DO NOTHING
+    """)
     # Restore the pre-015 view exactly as 010 defined it.
     op.execute(_LEGACY_SUMMARY_VIEW)
     op.execute("CREATE UNIQUE INDEX idx_summary_date_psp ON gold_reconciliation_summary (summary_date, psp_name)")

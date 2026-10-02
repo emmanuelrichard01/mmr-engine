@@ -350,3 +350,50 @@ async def test_resolve_discrepancy_writes_audit_event(conn, app_db, monkeypatch)
     assert [e["action"] for e in events] == ["resolved"]
     assert events[0]["actor"] == "dev-unauthenticated"
     assert await conn.fetchval("SELECT status::text FROM gold_discrepancies WHERE id = $1", disc) == "resolved"
+
+
+# ── Migrations are reversible ───────────────────────────────────────────────
+
+
+def test_migrations_round_trip(migrated_db_url):
+    """base → head → base → head on a scratch database: every downgrade works."""
+    import os
+
+    from alembic.config import Config
+
+    from alembic import command
+    from tests.integration.conftest import REPO_ROOT, _with_db
+
+    scratch = _with_db(migrated_db_url, "mmr_roundtrip")
+
+    async def recreate() -> None:
+        c = await asyncpg.connect(_with_db(migrated_db_url, "postgres"))
+        try:
+            await c.execute('DROP DATABASE IF EXISTS "mmr_roundtrip" WITH (FORCE)')
+            await c.execute('CREATE DATABASE "mmr_roundtrip"')
+        finally:
+            await c.close()
+
+    asyncio.run(recreate())
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    previous = os.environ.get("ALEMBIC_DATABASE_URL")
+    os.environ["ALEMBIC_DATABASE_URL"] = scratch.replace("postgresql://", "postgresql+asyncpg://", 1)
+    try:
+        command.upgrade(cfg, "head")
+        command.downgrade(cfg, "base")
+        command.upgrade(cfg, "head")
+    finally:
+        if previous is None:
+            os.environ.pop("ALEMBIC_DATABASE_URL", None)
+        else:
+            os.environ["ALEMBIC_DATABASE_URL"] = previous
+
+
+async def test_schema_inventory(conn):
+    tables = await conn.fetchval(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' "
+        "AND table_type = 'BASE TABLE' AND table_name <> 'alembic_version'"
+    )
+    views = await conn.fetchval("SELECT count(*) FROM pg_matviews WHERE schemaname = 'public'")
+    assert (tables, views) == (15, 1)

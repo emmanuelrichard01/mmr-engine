@@ -1,1 +1,1 @@
-# Cross-Border Mobile Money Reconciliation Engine
+# MMR — Money Movement Reconciliation engine

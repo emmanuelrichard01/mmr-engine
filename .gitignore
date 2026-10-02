@@ -36,10 +36,10 @@ docker-compose.override.yml
 *.duckdb
 *.duckdb.wal
 
-# ── dbt ───────────────────────────────────────────────────────────────────────
-dbt_project/target/
-dbt_project/logs/
-dbt_project/dbt_packages/
+# ── Local tooling ─────────────────────────────────────────────────────────────
+.claude/worktrees/
+scripts/demo_data/
+coverage.xml
 
 # ── Mypy ──────────────────────────────────────────────────────────────────────
 .mypy_cache/

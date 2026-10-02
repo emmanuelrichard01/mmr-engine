@@ -2,12 +2,14 @@
 """
 Idempotency key generation and registry lookup.
 
-The idempotency key is the foundation of exactly-once processing semantics.
-Every webhook event generates a key: {psp_name}:{psp_transaction_ref}:{event_type}
+The idempotency key is one half of effectively-once processing: delivery is
+at-least-once (webhook retries, Kafka redelivery), and every layer
+deduplicates on this key. Format: {psp_name}:{psp_transaction_ref}:{event_type}
 
-The key is checked atomically against silver_idempotency_keys using
-INSERT ... ON CONFLICT DO UPDATE with RETURNING — making the check-and-register
-a single atomic operation with no race condition window.
+The key is registered atomically in silver_idempotency_keys with
+INSERT ... ON CONFLICT DO UPDATE ... RETURNING (xmax = 0), so check-and-register
+is one statement with no race window. Callers must register the key in the
+same transaction as the side effect it protects (see ingestion_flow.py).
 
 References:
     - TDD §9.1: Idempotency Engine
