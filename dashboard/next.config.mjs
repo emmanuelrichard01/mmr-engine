@@ -1,13 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
-  async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: 'http://localhost:8000/:path*',
-      },
-    ];
+  // The browser reaches the MMR API only through the server-side proxy in
+  // app/api/mmr/[...path]/route.ts — there is no rewrite to the API.
+  async redirects() {
+    return [{ source: '/settings', destination: '/system', permanent: false }];
   },
 };
 
