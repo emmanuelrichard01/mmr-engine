@@ -41,6 +41,15 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
     return json(404, 'Not proxied');
   }
 
+  // State-changing requests must come from this dashboard's own pages: a
+  // cross-site form or fetch would otherwise act with the server-side key.
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    const origin = req.headers.get('origin');
+    if (!origin || new URL(origin).host !== req.headers.get('host')) {
+      return json(403, 'Cross-origin request rejected');
+    }
+  }
+
   const target = `${upstreamBase()}/${path.map(encodeURIComponent).join('/')}${req.nextUrl.search}`;
 
   // Build headers from scratch: client-supplied credentials are never forwarded.
