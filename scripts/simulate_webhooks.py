@@ -34,7 +34,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import requests
+import httpx
 
 # Configure stdout for UTF-8 encoding (especially on Windows)
 if hasattr(sys.stdout, "reconfigure"):
@@ -118,9 +118,9 @@ def _fire_paystack(payload: dict) -> dict:
     signature = _sign_paystack(body)
 
     try:
-        response = requests.post(
+        response = httpx.post(
             PAYSTACK_WEBHOOK_URL,
-            data=body,
+            content=body,
             headers={
                 "Content-Type": "application/json",
                 "X-Paystack-Signature": signature,
@@ -128,14 +128,14 @@ def _fire_paystack(payload: dict) -> dict:
             timeout=10,
         )
         return {"status": response.status_code, "body": response.json()}
-    except requests.exceptions.ConnectionError:
+    except httpx.ConnectError:
         return {"status": 0, "body": {"error": "Connection refused — is the API running?"}}
 
 
 def _fire_flutterwave(payload: dict) -> dict:
     """Send a Flutterwave webhook to the local API."""
     try:
-        response = requests.post(
+        response = httpx.post(
             FLUTTERWAVE_WEBHOOK_URL,
             json=payload,
             headers={
@@ -145,7 +145,7 @@ def _fire_flutterwave(payload: dict) -> dict:
             timeout=10,
         )
         return {"status": response.status_code, "body": response.json()}
-    except requests.exceptions.ConnectionError:
+    except httpx.ConnectError:
         return {"status": 0, "body": {"error": "Connection refused — is the API running?"}}
 
 

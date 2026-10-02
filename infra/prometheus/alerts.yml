@@ -1,57 +1,74 @@
-# Prometheus Alert Rules
-# Reference: TDD §12.3
+# Alert rules. Every expression references a metric that the code records
+# (src/observability/metrics.py); thresholds are starting points to tune.
 
 groups:
-  - name: reconciliation.pipeline
+  - name: mmr.ingestion
     rules:
-
-      - alert: PipelineLatencyHigh
-        expr: histogram_quantile(0.95, reconciliation_pipeline_duration_seconds_bucket) > 10
+      - alert: WebhookSignatureFailures
+        expr: sum by (psp_name) (rate(reconciliation_webhook_signature_failures_total[5m])) > 0.1
         for: 5m
-        labels:
-          severity: warning
+        labels: { severity: warning }
         annotations:
-          summary: "Pipeline P95 latency exceeds 10s SLA"
-          description: "Flow {{ $labels.flow_name }} P95 latency is {{ $value }}s"
+          summary: "Webhooks with invalid signatures from {{ $labels.psp_name }}"
+          description: "Misconfigured secret, or someone probing the endpoint."
 
-      - alert: WebhookSignatureFailuresHigh
-        expr: rate(reconciliation_webhook_signature_failures_total[5m]) > 0.1
+      - alert: EventsDeadLettered
+        expr: increase(reconciliation_dead_lettered_total[15m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Events parked in the dead-letter topic"
+          description: "Inspect dead.letter.queue; each message carries the original bytes and the error."
+
+      - alert: ProcessDown
+        expr: up{job=~"mmr-.*"} == 0
         for: 2m
-        labels:
-          severity: warning
+        labels: { severity: critical }
         annotations:
-          summary: "High rate of webhook signature failures"
-          description: "PSP {{ $labels.psp }} has {{ $value }} failures/s"
+          summary: "{{ $labels.job }} is not being scraped"
 
-  - name: reconciliation.financial
+  - name: mmr.reconciliation
     rules:
-
       - alert: OpenExposureHigh
-        expr: reconciliation_open_exposure_ngn > 500000
-        for: 0m
-        labels:
-          severity: critical
+        expr: sum by (psp_name) (reconciliation_open_exposure_ngn) > 500000
+        labels: { severity: critical }
         annotations:
-          summary: "Open financial exposure exceeds NGN 500,000"
-          description: "PSP {{ $labels.psp_name }} exposure: NGN {{ $value }}"
+          summary: "Open exposure above NGN 500,000 on {{ $labels.psp_name }}"
+          description: "Current: NGN {{ $value | humanize }}"
+
+      - alert: CriticalDiscrepanciesOpen
+        expr: sum(reconciliation_open_discrepancies{severity="critical"}) > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Critical discrepancies open for over 30 minutes"
 
       - alert: MatchRateLow
-        expr: reconciliation_match_rate_pct < 95
-        for: 15m
-        labels:
-          severity: warning
+        expr: reconciliation_match_rate_pct < 90
+        for: 1h
+        labels: { severity: warning }
         annotations:
-          summary: "Reconciliation match rate below 95%"
-          description: "PSP {{ $labels.psp_name }} match rate: {{ $value }}%"
+          summary: "7-day match rate below 90% on {{ $labels.psp_name }}"
 
-  - name: reconciliation.fx
+      - alert: WebhookGapsRecovered
+        expr: increase(reconciliation_backfill_records_total{outcome="new"}[6h]) > 10
+        labels: { severity: warning }
+        annotations:
+          summary: "Gap detection recovered missed webhooks from {{ $labels.psp_name }}"
+          description: "Webhook delivery from the PSP is unreliable; check the PSP dashboard."
+
+  - name: mmr.fx
     rules:
-
       - alert: FXRateStale
         expr: reconciliation_fx_rate_age_seconds > 7200
-        for: 0m
-        labels:
-          severity: warning
+        labels: { severity: warning }
         annotations:
-          summary: "FX rate snapshot older than 2 hours"
-          description: "{{ $labels.currency_pair }} rate not refreshed in {{ $value }}s"
+          summary: "{{ $labels.currency_pair }} rate not refreshed for 2h"
+
+  - name: mmr.api
+    rules:
+      - alert: ApiLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(reconciliation_http_request_duration_seconds_bucket{route!="unmatched"}[5m]))) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "API p95 latency above 1s"

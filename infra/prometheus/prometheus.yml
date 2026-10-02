@@ -1,5 +1,5 @@
-# Prometheus Configuration
-# Reference: TDD §12.3
+# Prometheus configuration: one scrape job per process that exports metrics.
+# See src/observability/metrics.py for what each exposes.
 
 global:
   scrape_interval: 15s
@@ -9,8 +9,14 @@ rule_files:
   - /etc/prometheus/alerts.yml
 
 scrape_configs:
-  - job_name: "reconciliation-api"
+  - job_name: mmr-api            # HTTP, webhooks, auth + DB-derived state gauges
     static_configs:
-      - targets: ["rec_api:8000"]
-    metrics_path: /metrics
-    scrape_interval: 10s
+      - targets: ["api:8000"]
+
+  - job_name: mmr-consumer       # Bronze/Silver ingestion, dead letters
+    static_configs:
+      - targets: ["consumer_worker:9101"]
+
+  - job_name: mmr-scheduler      # matching, discrepancies, alerts, backfill
+    static_configs:
+      - targets: ["scheduler:9102"]

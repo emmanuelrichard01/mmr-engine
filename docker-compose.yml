@@ -1,48 +1,74 @@
-# docker-compose.yml — Core Services
-# Cross-Border Mobile Money Reconciliation Engine
+# docker-compose.yml — MMR (Money Movement Reconciliation) engine, local stack
 #
-# Reference: TDD §5
+#   make up            start everything (migrations run automatically)
+#   make demo-full     start + synthetic data + matching + verification
+#
+# All credentials come from .env (copy .env.example). Data ports are bound to
+# 127.0.0.1 only; nothing here is meant to be exposed beyond your machine.
 
-name: reconciliation-engine
+name: mmr-engine
+
+x-app-env: &app-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  API_AUTH_DISABLED: ${API_AUTH_DISABLED:-false}
+  POSTGRES_PIPELINE_DSN: postgresql+asyncpg://reconciliation_pipeline:${RECON_PIPELINE_PASSWORD}@postgres:5432/reconciliation
+  POSTGRES_API_DSN: postgresql+asyncpg://reconciliation_api_user:${RECON_API_PASSWORD}@postgres:5432/reconciliation
+  POSTGRES_READONLY_DSN: postgresql+asyncpg://reconciliation_readonly:${RECON_READONLY_PASSWORD}@postgres:5432/reconciliation
+  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+  PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY}
+  FLUTTERWAVE_SECRET_KEY: ${FLUTTERWAVE_SECRET_KEY}
+  FLUTTERWAVE_SECRET_HASH: ${FLUTTERWAVE_SECRET_HASH}
+  PII_TOKENIZATION_KEY: ${PII_TOKENIZATION_KEY}
+  FX_PROVIDER_API_KEY: ${FX_PROVIDER_API_KEY:-}
+  SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+  image: mmr-engine:local
+  restart: unless-stopped
+  networks: [mmr]
 
 services:
 
   # ── PostgreSQL 16 ────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16
-    container_name: rec_postgres
+    image: postgres:16.4
     restart: unless-stopped
     environment:
       POSTGRES_DB: reconciliation
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      RECON_PIPELINE_PASSWORD: ${RECON_PIPELINE_PASSWORD}
+      RECON_API_PASSWORD: ${RECON_API_PASSWORD}
+      RECON_READONLY_PASSWORD: ${RECON_READONLY_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./scripts/init_postgres.sh:/docker-entrypoint-initdb.d/01_init.sh:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d reconciliation"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - rec_internal
+      retries: 12
+    networks: [mmr]
 
-  # ── Redpanda (Kafka-compatible) ───────────────────────────────────────────
+  # ── Redpanda (Kafka API) ─────────────────────────────────────────────────
   redpanda:
     image: redpandadata/redpanda:v23.3.21
-    container_name: rec_redpanda
     restart: unless-stopped
     command:
       - redpanda
       - start
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
-      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
-      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
       - --rpc-addr redpanda:33145
       - --advertise-rpc-addr redpanda:33145
       - --mode dev-container
@@ -54,39 +80,44 @@ services:
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     ports:
-      - "19092:19092"   # External Kafka access for local tools
-      - "18082:18082"   # Pandaproxy
-      - "18081:18081"   # Schema registry
+      - "127.0.0.1:19092:19092"
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true' || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
       timeout: 10s
-      retries: 5
-      start_period: 30s
-    networks:
-      - rec_internal
+      retries: 10
+    networks: [mmr]
 
-  # ── Redpanda Console (UI for Kafka topics) ────────────────────────────────
+  redpanda_init:
+    image: redpandadata/redpanda:v23.3.21
+    depends_on:
+      redpanda: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "
+        set -e;
+        for t in raw.paystack.events:3 raw.flutterwave.events:3 raw.polling.fallback:1 dead.letter.queue:1; do
+          rpk topic create $${t%%:*} -p $${t##*:} --brokers redpanda:9092 || rpk topic describe $${t%%:*} --brokers redpanda:9092 >/dev/null;
+        done;
+        echo 'Kafka topics ready'
+      "
+    networks: [mmr]
+
   redpanda_console:
     image: redpandadata/console:v2.7.2
-    container_name: rec_redpanda_console
     restart: unless-stopped
     environment:
       CONFIG_FILEPATH: /tmp/config.yml
     volumes:
-      - ./infra/redpanda/console_config.yml:/tmp/config.yml
+      - ./infra/redpanda/console_config.yml:/tmp/config.yml:ro
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
-      redpanda:
-        condition: service_healthy
-    networks:
-      - rec_internal
+      redpanda: { condition: service_healthy }
+    networks: [mmr]
 
-  # ── MinIO ─────────────────────────────────────────────────────────────────
+  # ── MinIO (Bronze object store) ──────────────────────────────────────────
   minio:
     image: minio/minio:RELEASE.2024-05-01T01-11-10Z
-    container_name: rec_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -95,247 +126,121 @@ services:
     volumes:
       - minio_data:/data
     ports:
-      - "9000:9000"   # API
-      - "9001:9001"   # Console
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-      start_period: 20s
-    networks:
-      - rec_internal
+      retries: 12
+    networks: [mmr]
 
-  # ── MinIO Init (creates buckets) ────────────────────────────────────────────
   minio_init:
     image: minio/mc:latest
-    container_name: rec_minio_init
     depends_on:
-      minio:
-        condition: service_healthy
+      minio: { condition: service_healthy }
     entrypoint: >
       /bin/sh -c "
         mc alias set local http://minio:9000 $$MINIO_ACCESS_KEY $$MINIO_SECRET_KEY &&
-        mc mb --ignore-existing local/reconciliation-bronze &&
-        echo 'MinIO initialised successfully'
+        mc mb --ignore-existing local/reconciliation-bronze
       "
     environment:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-    networks:
-      - rec_internal
+    networks: [mmr]
 
-  # ── Redpanda Init (pre-creates Kafka topics) ────────────────────────────────
-  redpanda_init:
-    image: redpandadata/redpanda:v24.2.18
-    container_name: rec_redpanda_init
-    depends_on:
-      redpanda:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-        rpk topic create raw.paystack.events   --brokers redpanda:9092 -p 3 2>/dev/null;
-        rpk topic create raw.flutterwave.events --brokers redpanda:9092 -p 3 2>/dev/null;
-        rpk topic create raw.mpesa.events       --brokers redpanda:9092 -p 3 2>/dev/null;
-        rpk topic create raw.polling.fallback   --brokers redpanda:9092 -p 1 2>/dev/null;
-        rpk topic create dead.letter.queue      --brokers redpanda:9092 -p 1 2>/dev/null;
-        echo 'Kafka topics initialised'
-      "
-    networks:
-      - rec_internal
-
-  # ── FastAPI Gateway ───────────────────────────────────────────────────────
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: api
-    container_name: rec_api
-    restart: unless-stopped
+  # ── Migrations (one-shot, as the database owner) ─────────────────────────
+  migrations:
+    <<: *app
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
     environment:
-      - ENVIRONMENT=${ENVIRONMENT}
-      - POSTGRES_PIPELINE_DSN=${POSTGRES_PIPELINE_DSN}
-      - POSTGRES_API_DSN=${POSTGRES_API_DSN}
-      - POSTGRES_READONLY_DSN=${POSTGRES_READONLY_DSN}
-      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - MINIO_ENDPOINT=minio:9000
-      - PAYSTACK_SECRET_KEY=${PAYSTACK_SECRET_KEY}
-      - FLUTTERWAVE_SECRET_KEY=${FLUTTERWAVE_SECRET_KEY}
-      - FLUTTERWAVE_SECRET_HASH=${FLUTTERWAVE_SECRET_HASH}
-      - FX_PROVIDER_API_KEY=${FX_PROVIDER_API_KEY}
-      - PREFECT_API_URL=http://prefect_server:4200/api
-    ports:
-      - "8000:8000"
+      ALEMBIC_DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_SUPERUSER_PASSWORD}@postgres:5432/reconciliation
     depends_on:
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 45s
-    volumes:
-      - ./src:/app/src
-    networks:
-      - rec_internal
+      postgres: { condition: service_healthy }
 
-  # ── Prefect Server ────────────────────────────────────────────────────────
+  # ── API ──────────────────────────────────────────────────────────────────
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrations: { condition: service_completed_successfully }
+      redpanda_init: { condition: service_completed_successfully }
+      minio_init: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # ── Consumer: Kafka → Bronze (MinIO) → Silver ────────────────────────────
+  consumer_worker:
+    <<: *app
+    command: ["python", "-m", "src.flows.consumer_worker"]
+    environment:
+      <<: *app-env
+    depends_on:
+      migrations: { condition: service_completed_successfully }
+      redpanda_init: { condition: service_completed_successfully }
+      minio_init: { condition: service_completed_successfully }
+
+  # ── Scheduler: matching, FX, gap detection, daily return ─────────────────
+  scheduler:
+    <<: *app
+    command: ["python", "-m", "src.flows.scheduler"]
+    environment:
+      <<: *app-env
+      PREFECT_API_URL: http://prefect_server:4200/api
+    depends_on:
+      migrations: { condition: service_completed_successfully }
+      prefect_server: { condition: service_healthy }
+
+  # ── Prefect server (flow-run history UI) ─────────────────────────────────
   prefect_server:
-    image: prefecthq/prefect:3-latest
-    container_name: rec_prefect_server
+    image: prefecthq/prefect:3-python3.12
     restart: unless-stopped
     command: prefect server start --host 0.0.0.0
     environment:
-      PREFECT_SERVER_API_HOST: 0.0.0.0
       PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://postgres:${POSTGRES_SUPERUSER_PASSWORD}@postgres:5432/prefect
       PREFECT_UI_API_URL: http://localhost:4200/api
     ports:
-      - "4200:4200"
+      - "127.0.0.1:4200:4200"
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\" 2>/dev/null || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')\""]
+      interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - rec_internal
-
-  # ── Prefect Worker ────────────────────────────────────────────────────────
-  prefect_worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: worker
-    container_name: rec_prefect_worker
-    restart: unless-stopped
-    command: prefect worker start --pool reconciliation-pool
-    environment:
-      - PREFECT_API_URL=http://prefect_server:4200/api
-      - POSTGRES_PIPELINE_DSN=${POSTGRES_PIPELINE_DSN}
-      - POSTGRES_API_DSN=${POSTGRES_API_DSN}
-      - POSTGRES_READONLY_DSN=${POSTGRES_READONLY_DSN}
-      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - FX_PROVIDER_API_KEY=${FX_PROVIDER_API_KEY}
-      - PAYSTACK_SECRET_KEY=${PAYSTACK_SECRET_KEY}
-      - FLUTTERWAVE_SECRET_KEY=${FLUTTERWAVE_SECRET_KEY}
-      - FLUTTERWAVE_SECRET_HASH=${FLUTTERWAVE_SECRET_HASH}
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
-    depends_on:
-      prefect_server:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    volumes:
-      - ./src:/app/src
-      - ./dbt_project:/app/dbt_project
-      - duckdb_data:/data/analytics
-    networks:
-      - rec_internal
-
-  # ── Consumer Worker (runs Kafka consumer) ───────────────────────────────────
-  consumer_worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: worker
-    container_name: rec_consumer_worker
-    restart: unless-stopped
-    command: python src/flows/consumer_worker.py
-    environment:
-      - POSTGRES_PIPELINE_DSN=${POSTGRES_PIPELINE_DSN}
-      - POSTGRES_API_DSN=${POSTGRES_API_DSN}
-      - POSTGRES_READONLY_DSN=${POSTGRES_READONLY_DSN}
-      - KAFKA_BOOTSTRAP_SERVERS=redpanda:9092
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-      - FX_PROVIDER_API_KEY=${FX_PROVIDER_API_KEY}
-      - PAYSTACK_SECRET_KEY=${PAYSTACK_SECRET_KEY}
-      - FLUTTERWAVE_SECRET_KEY=${FLUTTERWAVE_SECRET_KEY}
-      - FLUTTERWAVE_SECRET_HASH=${FLUTTERWAVE_SECRET_HASH}
-      - PREFECT_API_URL=http://prefect_server:4200/api
-    depends_on:
-      prefect_server:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
-      redpanda_init:
-        condition: service_completed_successfully
-      minio:
-        condition: service_healthy
-    volumes:
-      - ./src:/app/src
-    networks:
-      - rec_internal
-
-  # ── Alembic Migrations (runs once on startup) ──────────────────────────────
-  migrations:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: migrations
-    container_name: rec_migrations
-    command: alembic upgrade head
-    environment:
-      # Migrations run as superuser — required for CREATE EXTENSION, GRANT, DDL
-      ALEMBIC_DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_SUPERUSER_PASSWORD}@postgres:5432/reconciliation
-      POSTGRES_PIPELINE_DSN: ${POSTGRES_PIPELINE_DSN}
-      POSTGRES_API_DSN: ${POSTGRES_API_DSN}
-      POSTGRES_READONLY_DSN: ${POSTGRES_READONLY_DSN}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      PAYSTACK_SECRET_KEY: ${PAYSTACK_SECRET_KEY}
-      FLUTTERWAVE_SECRET_KEY: ${FLUTTERWAVE_SECRET_KEY}
-      FLUTTERWAVE_SECRET_HASH: ${FLUTTERWAVE_SECRET_HASH}
-      FX_PROVIDER_API_KEY: ${FX_PROVIDER_API_KEY}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - rec_internal
-    restart: "no"
+      retries: 12
+      start_period: 20s
+    networks: [mmr]
 
   # ── Dashboard (Next.js) ──────────────────────────────────────────────────
   dashboard:
     build:
       context: ./dashboard
       dockerfile: Dockerfile
-    container_name: rec_dashboard
     restart: unless-stopped
     environment:
-      - NEXT_PUBLIC_API_URL=http://api:8000
+      # Server-side only: the browser talks to /api/mmr/*, never to the API
+      # directly, so the key is never shipped to the client.
+      MMR_API_URL: http://api:8000
+      MMR_API_KEY: ${DASHBOARD_API_KEY:-}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
-      api:
-        condition: service_healthy
-    networks:
-      - rec_internal
+      api: { condition: service_healthy }
+    networks: [mmr]
 
 volumes:
   postgres_data:
   redpanda_data:
   minio_data:
-  duckdb_data:
 
 networks:
-  rec_internal:
-    driver: bridge
-
+  mmr:
+    name: mmr

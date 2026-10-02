@@ -1,60 +1,46 @@
-# Dockerfile — Multi-Stage Build
-# Cross-Border Mobile Money Reconciliation Engine
+# Dockerfile — MMR (Money Movement Reconciliation) engine
 #
-# Stages:
-#   base       → Python 3.12 + dependencies
-#   api        → FastAPI + uvicorn
-#   worker     → Prefect + dbt
-#   migrations → Alembic
+# One runtime image, several roles (selected by the compose `command`):
+#   api        uvicorn src.api.main:app
+#   consumer   python -m src.flows.consumer_worker
+#   scheduler  python -m src.flows.scheduler
+#   migrations alembic upgrade head
 #
-# Dashboard: see dashboard/Dockerfile (Next.js 15, standalone build)
+# The `api`, `worker` and `migrations` targets are kept as aliases of the
+# same runtime stage so existing build commands keep working.
 #
-# Reference: TDD §6
+# Dashboard: see dashboard/Dockerfile.
 
-FROM python:3.12-slim AS base
+FROM python:3.12-slim-bookworm AS build
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1
+RUN pip install --no-cache-dir "uv>=0.5,<1"
+WORKDIR /build
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+RUN uv venv /opt/venv && VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
 
+
+FROM python:3.12-slim-bookworm AS runtime
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 mmr \
+    && useradd --system --uid 10001 --gid mmr --home-dir /app --shell /usr/sbin/nologin mmr
 WORKDIR /app
-
-# Ensure src/ is importable as a Python package from /app
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-
-# System dependencies shared across all stages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv for faster dependency resolution
-RUN pip install --no-cache-dir uv
-
-COPY pyproject.toml .
-RUN uv pip install --system --no-cache .
-
-
-# ── API stage ─────────────────────────────────────────────────────────────────
-FROM base AS api
-COPY src/ ./src/
+COPY --from=build /opt/venv /opt/venv
+COPY --chown=mmr:mmr src/ ./src/
+COPY --chown=mmr:mmr alembic/ ./alembic/
+COPY --chown=mmr:mmr alembic.ini ./
+COPY --chown=mmr:mmr scripts/ ./scripts/
+USER mmr
 EXPOSE 8000
-CMD ["uvicorn", "src.api.main:app", \
-     "--host", "0.0.0.0", \
-     "--port", "8000", \
-     "--workers", "2"]
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers"]
 
 
-# ── Worker stage ──────────────────────────────────────────────────────────────
-FROM base AS worker
-# dbt requires git for package resolution
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-RUN uv pip install --system --no-cache "dbt-postgres>=1.8,<2.0"
-COPY src/ ./src/
-COPY dbt_project/ ./dbt_project/
-# No CMD — Prefect worker command provided by compose
-
-
-# ── Migrations stage ─────────────────────────────────────────────────────────
-FROM base AS migrations
-COPY alembic/ ./alembic/
-COPY alembic.ini .
-COPY src/ ./src/
-# CMD provided by compose: alembic upgrade head
+FROM runtime AS api
+FROM runtime AS worker
+FROM runtime AS migrations

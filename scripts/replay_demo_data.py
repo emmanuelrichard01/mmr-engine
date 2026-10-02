@@ -14,7 +14,7 @@ import hashlib
 import time
 import argparse
 from pathlib import Path
-import requests
+import httpx
 
 # Configure stdout for UTF-8 encoding (especially on Windows)
 if hasattr(sys.stdout, "reconfigure"):
@@ -24,7 +24,6 @@ if hasattr(sys.stdout, "reconfigure"):
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 PAYSTACK_WEBHOOK_URL = f"{API_BASE_URL}/v1/webhooks/paystack"
 FLUTTERWAVE_WEBHOOK_URL = f"{API_BASE_URL}/v1/webhooks/flutterwave"
-MPESA_WEBHOOK_URL = f"{API_BASE_URL}/v1/webhooks/mpesa"
 
 # Secret keys for signing
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "sk_test_dummy_key")
@@ -47,9 +46,9 @@ def replay_event(event: dict) -> bool:
     try:
         if psp == "paystack":
             signature = sign_paystack(body)
-            resp = requests.post(
+            resp = httpx.post(
                 PAYSTACK_WEBHOOK_URL,
-                data=body,
+                content=body,
                 headers={
                     "Content-Type": "application/json",
                     "X-Paystack-Signature": signature,
@@ -57,21 +56,12 @@ def replay_event(event: dict) -> bool:
                 timeout=5,
             )
         elif psp == "flutterwave":
-            resp = requests.post(
+            resp = httpx.post(
                 FLUTTERWAVE_WEBHOOK_URL,
-                data=body,
+                content=body,
                 headers={
                     "Content-Type": "application/json",
                     "verif-hash": FLUTTERWAVE_SECRET_HASH,
-                },
-                timeout=5,
-            )
-        elif psp == "mpesa":
-            resp = requests.post(
-                MPESA_WEBHOOK_URL,
-                data=body,
-                headers={
-                    "Content-Type": "application/json",
                 },
                 timeout=5,
             )

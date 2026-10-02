@@ -82,6 +82,31 @@ RULES: list[tuple[str, str, str, str]] = [
         "Possible hardcoded credential detected. Secrets must be loaded from "
         "environment variables or secrets manager. Reference: Data Governance §4.4",
     ),
+    (
+        r"PASSWORD\s+'[^']+'",
+        "SQL_LITERAL_PASSWORD",
+        "HIGH",
+        "Role password as a SQL literal. Pass it from the environment "
+        "(see scripts/init_postgres.sh).",
+    ),
+    (
+        r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+        "PRIVATE_KEY",
+        "CRITICAL",
+        "Private key material committed to the repository.",
+    ),
+    (
+        r"AKIA[0-9A-Z]{16}",
+        "AWS_ACCESS_KEY",
+        "CRITICAL",
+        "AWS access key id committed to the repository.",
+    ),
+    (
+        r"hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+",
+        "SLACK_WEBHOOK",
+        "HIGH",
+        "Slack incoming-webhook URL (a bearer secret) committed to the repository.",
+    ),
     # Debug / development-only settings in non-dev files
     (
         r'LOG_LEVEL\s*=\s*["\']?DEBUG',
@@ -109,14 +134,29 @@ RULES: list[tuple[str, str, str, str]] = [
 
 # Files and directories to skip
 SKIP_DIRS = {
-    ".git", ".venv", "venv", "__pycache__", "node_modules",
+    ".git", ".venv", "venv", "__pycache__", "node_modules", ".next",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", "htmlcov",
-    ".gemini", "docs",
+    ".gemini", ".claude", "docs",
 }
 SKIP_FILES = {
     "security_check.py",  # This file contains the patterns as strings
 }
-SCAN_EXTENSIONS = {".py", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".env"}
+SCAN_EXTENSIONS = {
+    ".py", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".env", ".sql", ".sh",
+    ".json", ".ts", ".tsx", ".js", ".mjs",
+}
+SCAN_NAMES = {"Dockerfile", "Makefile"}
+
+# Obvious placeholders and test fixtures are not credentials.
+PLACEHOLDER_MARKERS = ("test", "dummy", "replace-me", "replace_me", "example", "your_", "<")
+
+
+def should_scan(path: Path) -> bool:
+    return (
+        path.suffix in SCAN_EXTENSIONS
+        or path.name in SCAN_NAMES
+        or path.name.startswith(".env")  # .env, .env.example, .env.local ...
+    )
 
 
 def scan_file(file_path: Path) -> list[Violation]:
@@ -135,7 +175,12 @@ def scan_file(file_path: Path) -> list[Violation]:
             continue
 
         for pattern, rule_name, severity, explanation in RULES:
-            if re.search(pattern, line, re.IGNORECASE):
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match and rule_name == "HARDCODED_SECRET" and any(
+                marker in match.group(0).lower() for marker in PLACEHOLDER_MARKERS
+            ):
+                continue
+            if match:
                 violations.append(Violation(
                     file=str(file_path),
                     line_number=line_number,
@@ -158,7 +203,7 @@ def scan_directory(root: Path) -> list[Violation]:
             continue
         if path.name in SKIP_FILES:
             continue
-        if path.suffix not in SCAN_EXTENSIONS:
+        if not should_scan(path):
             continue
         if not path.is_file():
             continue

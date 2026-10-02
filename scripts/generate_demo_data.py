@@ -84,7 +84,6 @@ FX_RATES = {
     "NGN/USD": Decimal("0.00063"),   # ~1 USD = 1,587 NGN
     "NGN/GBP": Decimal("0.00050"),   # ~1 GBP = 2,000 NGN
     "NGN/EUR": Decimal("0.00058"),   # ~1 EUR = 1,724 NGN
-    "NGN/KES": Decimal("0.082"),     # ~1 KES = 12.2 NGN
 }
 
 

@@ -35,6 +35,7 @@ from uuid import UUID
 
 import structlog
 from pandera.errors import SchemaError
+from prometheus_client import start_http_server
 
 from src.config import get_settings
 from src.engine.normaliser import PermanentEventError
@@ -203,9 +204,13 @@ class ConsumerWorker:
         self._running = False
 
 
+METRICS_PORT = 9101
+
+
 async def main() -> None:
     """Entry point for the consumer worker process."""
     configure_logging(level=get_settings().log_level)
+    start_http_server(METRICS_PORT)
     await ConsumerWorker().start()
 
 

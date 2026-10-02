@@ -1,257 +1,197 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# MMR Engine — Makefile
-# Professional-grade operations for the reconciliation engine.
+# MMR — Money Movement Reconciliation engine: Makefile
 #
-# Usage: make <target>
-# Run  : make help  — to see all available commands
+# Usage: make <target>      (make help lists everything)
 # ══════════════════════════════════════════════════════════════════════════════
 
 .DEFAULT_GOAL := help
 
-# ─── Configuration ─────────────────────────────────────────────────────────────
+COMPOSE_FILE    := docker-compose.yml
+MONITORING_FILE := docker-compose.monitoring.yml
+PYTHON          := $(if $(wildcard .venv/Scripts/python.exe),.venv/Scripts/python,$(if $(wildcard .venv/bin/python),.venv/bin/python,python))
+PG_USER         := postgres
+PG_DB           := reconciliation
 
-COMPOSE_FILE     := docker-compose.yml
-MONITORING_FILE  := docker-compose.monitoring.yml
-PYTHON           := python
-PG_USER          := postgres
-PG_DB            := reconciliation
-
-# ─── Phony Targets ─────────────────────────────────────────────────────────────
-
-.PHONY: help doctor up down build restart rebuild logs logs-errors logs-api \
-        shell migrate migrate-down \
-        test test-unit test-integration test-contracts test-all coverage \
-        lint format typecheck security-check \
-        demo demo-data demo-data-week \
-        webhook webhook-batch webhook-unmatched webhook-duplicate \
-        replay matching smoke \
-        demo-investor investor-reset \
+.PHONY: help doctor up up-monitoring down build restart rebuild logs logs-api logs-errors shell \
+        migrate migrate-down api-key \
+        test test-unit test-db test-integration test-contracts test-all coverage \
+        lint format typecheck security-check check \
+        demo demo-full demo-reset demo-data demo-data-week \
+        webhook webhook-batch webhook-unmatched webhook-duplicate replay matching smoke \
         status clean clean-data clean-dashboard reset \
         dashboard dashboard-install dashboard-build
 
-# ══════════════════════════════════════════════════════════════════════════════
-# HELP
-# ══════════════════════════════════════════════════════════════════════════════
-
 help: ## Show all available commands grouped by category
-	@awk 'BEGIN { \
-		FS = ":.*##"; \
-		print "\nMMR Engine — Available Commands\n"; \
-		print "─────────────────────────────────────────────────────────\n"; \
-	} \
-	/^## ──/ { \
-		gsub(/^## /, "", $$0); \
-		printf "\n  \033[33m%s\033[0m\n", $$0; \
-	} \
-	/^[a-zA-Z_-]+:.*?##/ { \
-		printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2; \
-	}' $(MAKEFILE_LIST)
+	@awk 'BEGIN { FS = ":.*##"; print "\nMMR engine — available commands\n" } \
+	/^## ──/ { gsub(/^## /, "", $$0); printf "\n  \033[33m%s\033[0m\n", $$0 } \
+	/^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Infrastructure ───────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
+## ── Infrastructure ─────────────────────────────────────────────────────────
 
-doctor: ## Run pre-flight checks (Docker, .env, ports, Python)
+doctor: ## Pre-flight checks (Docker, .env, ports, Python)
 	@$(PYTHON) scripts/doctor.py
 
-up: ## Start all core services (non-blocking)
-	docker compose -f $(COMPOSE_FILE) up -d --build
-	@echo ""
-	@echo "  ✓ Services starting. Run 'make logs' to follow output."
-	@echo "  ✓ Dashboard: http://localhost:3000"
-	@echo "  ✓ API:       http://localhost:8000"
-	@echo ""
+up: ## Start the stack; migrations run automatically before the app services
+	docker compose -f $(COMPOSE_FILE) up -d --build --wait
+	@echo "  Dashboard  http://localhost:3000"
+	@echo "  API docs   http://localhost:8000/docs"
+	@echo "  Prefect    http://localhost:4200"
 
-down: ## Stop all services
-	docker compose -f $(COMPOSE_FILE) down
+up-monitoring: ## Start the stack plus Prometheus (:9090) and Grafana (:3001)
+	docker compose -f $(COMPOSE_FILE) -f $(MONITORING_FILE) up -d --build --wait
 
-build: ## Rebuild all Docker images (no cache)
+down: ## Stop all services (keeps data)
+	docker compose -f $(COMPOSE_FILE) -f $(MONITORING_FILE) down
+
+build: ## Rebuild images without cache
 	docker compose -f $(COMPOSE_FILE) build --no-cache
 
-restart: ## Restart all services (preserves data)
+restart: ## Restart services (keeps data)
 	docker compose -f $(COMPOSE_FILE) restart
 
-rebuild: ## Full rebuild: stop → build → start → migrate
+rebuild: ## Stop, rebuild and start (migrations run on start)
 	docker compose -f $(COMPOSE_FILE) down
-	docker compose -f $(COMPOSE_FILE) up -d --build
-	@$(PYTHON) scripts/wait_for_postgres.py
-	docker compose -f $(COMPOSE_FILE) run --rm migrations alembic upgrade head
-	@echo "✓ Rebuild complete"
+	docker compose -f $(COMPOSE_FILE) up -d --build --wait
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Logs ─────────────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
+## ── Logs ───────────────────────────────────────────────────────────────────
 
 logs: ## Follow logs from all services
 	docker compose -f $(COMPOSE_FILE) logs -f
 
-logs-api: ## Follow API and worker logs only
-	docker compose -f $(COMPOSE_FILE) logs -f api prefect_worker
+logs-api: ## Follow API, consumer and scheduler logs
+	docker compose -f $(COMPOSE_FILE) logs -f api consumer_worker scheduler
 
-logs-errors: ## Show only ERROR-level lines from all services (last 200 lines)
+logs-errors: ## Show recent error lines from all services
 	@docker compose -f $(COMPOSE_FILE) logs --tail=200 2>&1 | grep -iE "error|exception|failed|traceback|critical" || echo "  (no errors found)"
 
-shell: ## Open a bash shell in the API container
+shell: ## Shell in the API container
 	docker compose -f $(COMPOSE_FILE) exec api /bin/bash
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Database ─────────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
+## ── Database ───────────────────────────────────────────────────────────────
 
-migrate: ## Run all pending Alembic migrations
+migrate: ## Apply pending migrations (also automatic on `make up`)
 	docker compose -f $(COMPOSE_FILE) run --rm migrations alembic upgrade head
 
 migrate-down: ## Roll back one migration
 	docker compose -f $(COMPOSE_FILE) run --rm migrations alembic downgrade -1
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Testing ──────────────────────────────────────────════════════════════════
-# ══════════════════════════════════════════════════════════════════════════════
+api-key: ## Issue an API key: make api-key NAME=dashboard SCOPE=write
+	docker compose -f $(COMPOSE_FILE) run --rm migrations \
+		python scripts/create_api_key.py --name "$(NAME)" --scope "$(or $(SCOPE),read)"
 
-test: ## Run full test suite (unit + integration + contracts)
-	pytest tests/ -v --asyncio-mode=auto --tb=short
+## ── Quality ────────────────────────────────────────────────────────────────
 
-test-unit: ## Run unit tests only
-	pytest tests/unit/ -v
+test: ## Whole suite (DB tests use MMR_TEST_DATABASE_URL or an embedded Postgres)
+	$(PYTHON) -m pytest tests/ --tb=short
 
-test-integration: ## Run integration tests only
-	pytest tests/integration/ -v --asyncio-mode=auto
+test-unit: ## Unit + contract tests (no database)
+	$(PYTHON) -m pytest tests/unit/ tests/contracts/
 
-test-contracts: ## Run API contract / schema tests only
-	pytest tests/contracts/ -v
+test-db: ## Database tests: migrations, constraints, triggers, concurrency
+	$(PYTHON) -m pytest tests/integration/ -m db
 
-test-all: ## Run all tests with coverage report
-	pytest tests/ -v --asyncio-mode=auto --tb=short --cov=src --cov-report=term-missing --cov-report=html
-	@echo ""
-	@echo "  Coverage report: htmlcov/index.html"
+test-integration: test-db ## Alias of test-db
 
-coverage: ## Run tests and open HTML coverage report
-	pytest tests/ --cov=src --cov-report=html --cov-report=term-missing
-	@echo "  Coverage report: htmlcov/index.html"
+test-contracts: ## Schema contract tests only
+	$(PYTHON) -m pytest tests/contracts/
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Code Quality ─────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
+coverage: ## Whole suite with coverage (htmlcov/index.html)
+	$(PYTHON) -m pytest tests/ --cov=src --cov-report=term-missing --cov-report=html
 
-lint: ## Lint Python source with ruff
-	ruff check src/ tests/
+test-all: coverage ## Alias of coverage
 
-format: ## Format Python source with ruff
-	ruff format src/ tests/
+lint: ## Ruff lint + format check
+	$(PYTHON) -m ruff check src/ tests/
+	$(PYTHON) -m ruff format --check src/ tests/
 
-typecheck: ## Run mypy type checker
-	mypy src/ --ignore-missing-imports
+format: ## Format with ruff
+	$(PYTHON) -m ruff format src/ tests/
 
-security-check: ## Run security scanner (secrets, TLS, injection checks)
+typecheck: ## mypy --strict (configured in pyproject.toml)
+	$(PYTHON) -m mypy src/
+
+security-check: ## Secret / unsafe-pattern scanner
 	$(PYTHON) scripts/security_check.py
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Demo & Data ──────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
+check: lint typecheck security-check test ## Everything CI runs for Python
 
-demo-data: ## Generate 30 days of synthetic transaction data
+## ── Demo & data (all synthetic) ────────────────────────────────────────────
+
+demo-full: ## Stack + 30 days of synthetic data + matching, verified end to end
+	@$(PYTHON) scripts/demo_full.py --days 30 --monitoring
+
+demo: ## Quicker demo: 7 days of synthetic data
+	@$(PYTHON) scripts/demo_full.py --days 7
+
+demo-reset: ## Destroy all data, then demo-full on a fresh stack (DESTRUCTIVE)
+	docker compose -f $(COMPOSE_FILE) -f $(MONITORING_FILE) down -v
+	@$(PYTHON) scripts/demo_full.py --days 30 --monitoring
+
+demo-data: ## Generate 30 days of synthetic events (scripts/demo_data/)
 	$(PYTHON) scripts/generate_demo_data.py --days 30
 
-demo-data-week: ## Generate 7 days of synthetic data (quick)
+demo-data-week: ## Generate 7 days of synthetic events
 	$(PYTHON) scripts/generate_demo_data.py --days 7
 
-webhook: ## Fire a single matched pair (Paystack + Flutterwave)
+replay: ## Replay generated events through the signed webhook endpoints
+	$(PYTHON) scripts/replay_demo_data.py
+
+webhook: ## Fire one matched pair (Paystack + Flutterwave)
 	$(PYTHON) scripts/simulate_webhooks.py matched-pair
 
 webhook-batch: ## Fire 20 mixed webhook scenarios
 	$(PYTHON) scripts/simulate_webhooks.py batch --count 20
 
-webhook-unmatched: ## Fire an unmatched event (creates a discrepancy)
+webhook-unmatched: ## Fire an unmatched event
 	$(PYTHON) scripts/simulate_webhooks.py unmatched --psp paystack
 
-webhook-duplicate: ## Fire a duplicate event (tests idempotency handling)
+webhook-duplicate: ## Fire a duplicate event (idempotency)
 	$(PYTHON) scripts/simulate_webhooks.py duplicate
 
-replay: ## Replay all synthetic demo data through the API
-	$(PYTHON) scripts/replay_demo_data.py
-
-matching: ## Trigger the Silver→Gold matching flow manually
-	docker compose exec prefect_worker $(PYTHON) -c \
+matching: ## Run the matching flow now (it also runs every 5 minutes)
+	docker compose -f $(COMPOSE_FILE) exec -T scheduler python -c \
 		"import asyncio; from src.flows.matching_flow import silver_to_gold_matching_flow; print(asyncio.run(silver_to_gold_matching_flow()))"
 
-smoke: ## Run smoke test against live stack (validates endpoints + data)
+smoke: ## Probe liveness and readiness of the running stack
 	@$(PYTHON) scripts/smoke_test.py
 
-demo: ## Full demo setup: services + data + matching (dev)
-	@$(PYTHON) scripts/investor_demo.py --days 7 --webhooks 30
+## ── Dashboard ──────────────────────────────────────────────────────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Investor Demo ────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
-
-demo-investor: ## Full investor demo: 30 days of data, verified pipeline
-	@$(PYTHON) scripts/investor_demo.py --days 30 --webhooks 100 --monitoring
-
-investor-reset: ## Clean + rebuild + full investor demo (fresh slate)
-	@echo "⚠  This will destroy all current data. Starting fresh..."
-	docker compose -f $(COMPOSE_FILE) down -v
-	docker compose -f $(COMPOSE_FILE) up -d --build
-	@$(PYTHON) scripts/wait_for_postgres.py
-	docker compose -f $(COMPOSE_FILE) run --rm migrations alembic upgrade head
-	@$(PYTHON) scripts/investor_demo.py --days 30 --webhooks 100 --monitoring
-
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Dashboard ────────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
-
-dashboard: ## Start dashboard dev server (http://localhost:3000)
+dashboard: ## Dashboard dev server (http://localhost:3000)
 	cd dashboard && npm run dev
 
-dashboard-install: ## Install dashboard npm dependencies
-	cd dashboard && npm install
+dashboard-install: ## Install dashboard dependencies
+	cd dashboard && npm ci
 
-dashboard-build: ## Build dashboard for production
+dashboard-build: ## Production build of the dashboard
 	cd dashboard && npm run build
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Operations ───────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
+## ── Operations ─────────────────────────────────────────────────────────────
 
-status: ## Show container status, database tables, and record counts
-	@echo ""
-	@echo "  ── Containers ──────────────────────────────────────────────────"
+status: ## Container status and row counts per layer
 	@docker compose -f $(COMPOSE_FILE) ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null
-	@echo ""
-	@echo "  ── Record Counts ───────────────────────────────────────────────"
 	@docker compose -f $(COMPOSE_FILE) exec -T postgres psql -U $(PG_USER) -d $(PG_DB) -c \
-		"SELECT \
-		  'bronze_ingestion_log'           AS table_name, count(*) AS rows FROM bronze_ingestion_log \
-		  UNION ALL SELECT 'silver_canonical_transactions', count(*) FROM silver_canonical_transactions \
-		  UNION ALL SELECT 'gold_reconciliation_pairs',     count(*) FROM gold_reconciliation_pairs \
-		  UNION ALL SELECT 'gold_discrepancies',            count(*) FROM gold_discrepancies \
-		  ORDER BY table_name;" \
-		2>/dev/null || echo "  (database not running — use 'make up')"
-	@echo ""
+		"SELECT 'bronze_ingestion_log' AS layer, count(*) FROM bronze_ingestion_log \
+		 UNION ALL SELECT 'silver_canonical_transactions', count(*) FROM silver_canonical_transactions \
+		 UNION ALL SELECT 'gold_matched_transactions', count(*) FROM gold_matched_transactions \
+		 UNION ALL SELECT 'gold_discrepancies (open)', count(*) FROM gold_discrepancies WHERE status = 'open';" \
+		2>/dev/null || echo "  (database not running: make up)"
 
-# ══════════════════════════════════════════════════════════════════════════════
-## ── Cleanup ──────────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
+## ── Cleanup ────────────────────────────────────────────────────────────────
 
-clean: ## Remove containers, volumes, and generated files (DESTRUCTIVE)
-	docker compose -f $(COMPOSE_FILE) down -v --remove-orphans
+clean: ## Remove containers, volumes and generated files (DESTRUCTIVE)
+	docker compose -f $(COMPOSE_FILE) -f $(MONITORING_FILE) down -v --remove-orphans
 	$(PYTHON) scripts/clean_project.py
 
-clean-dashboard: ## Remove dashboard node_modules and .next build cache
+clean-dashboard: ## Remove dashboard node_modules and .next
 	$(PYTHON) scripts/clean_project.py --dashboard
 
-clean-data: ## Remove only generated demo data files
-	@$(PYTHON) -c "import shutil, os; shutil.rmtree('scripts/demo_data', ignore_errors=True); print('✓ Cleaned scripts/demo_data/')"
+clean-data: ## Remove generated demo data files
+	@$(PYTHON) -c "import shutil; shutil.rmtree('scripts/demo_data', ignore_errors=True); print('removed scripts/demo_data/')"
 
-reset: ## Full reset: destroy all data + rebuild + migrate + seed (DESTRUCTIVE)
-	@echo ""
-	@echo "  ⚠  WARNING: This will permanently destroy all containers and data."
-	@echo "  ⚠  Press Ctrl+C to cancel, or wait 5 seconds to continue..."
+reset: ## Destroy all data, rebuild, and load 7 days of demo data (DESTRUCTIVE)
+	@echo "  WARNING: destroying all containers and data in 5 seconds (Ctrl+C to cancel)"
 	@sleep 5
 	docker compose -f $(COMPOSE_FILE) down -v --remove-orphans
-	docker compose -f $(COMPOSE_FILE) up -d --build
-	@$(PYTHON) scripts/wait_for_postgres.py
-	docker compose -f $(COMPOSE_FILE) run --rm migrations alembic upgrade head
-	$(PYTHON) scripts/generate_demo_data.py --days 7
-	@echo ""
-	@echo "  ✓ Full reset complete. System is clean and ready."
+	@$(PYTHON) scripts/demo_full.py --days 7

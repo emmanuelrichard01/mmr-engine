@@ -1,0 +1,21 @@
+# Keep the build context small and free of secrets.
+.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+htmlcov
+coverage.xml
+.env
+.env.*
+!.env.example
+.claude
+New Must Read Docs
+dashboard
+docs
+tests
+scripts/demo_data
+dbt_project

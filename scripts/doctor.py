@@ -152,7 +152,7 @@ def check_scripts() -> bool:
     required = [
         "scripts/generate_demo_data.py",
         "scripts/simulate_webhooks.py",
-        "scripts/investor_demo.py",
+        "scripts/demo_full.py",
         "scripts/wait_for_postgres.py",
         "docker-compose.yml",
     ]
