@@ -34,10 +34,12 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
+          # setup-uv creates and activates .venv for this Python version.
           python-version: ${{ env.PYTHON_VERSION }}
+          cache-dependency-glob: pyproject.toml
 
       - name: Install
-        run: uv venv && uv pip install -e ".[test,dev]"
+        run: uv pip install -e ".[test,dev]"
 
       - name: Ruff
         run: |
