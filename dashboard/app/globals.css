@@ -1182,3 +1182,15 @@
 @utility scrollbar-none {
   scrollbar-width: none;
 }
+
+/*
+ * Entrance animations start from opacity 0 and are completed by requestAnimationFrame.
+ * Where frames never run (printing, or a page captured while its tab is hidden), content
+ * must still be readable, so print output ignores any unfinished entrance state.
+ */
+@media print {
+  [style*='opacity'] {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
