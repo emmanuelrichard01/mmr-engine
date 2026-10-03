@@ -44,6 +44,14 @@ Every claim in the README is now backed by code and tests.
   lint/type/build.
 
 ### Dashboard
+- Redesigned as an operations console:
+  - an inbox for keyboard-first triage, with bulk resolve;
+  - a transaction explorer that traces each transaction's lineage;
+  - a pair inspector showing per-signal confidence;
+  - pipeline activity, exposure by age, and a command palette.
+- Design system: `dashboard/DESIGN.md`. 51 unit tests and 52 Playwright + axe end-to-end tests.
+- New read endpoints back it: transactions, pair detail, exposure aging, bulk resolve, pipeline runs
+  and search.
 - Shows only real data or a real error state. Demo data appears only behind an explicit build flag,
   with a banner that can't be dismissed.
 - Money is formatted from integer kobo with exact decimal strings; there is no float arithmetic.

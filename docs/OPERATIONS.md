@@ -38,11 +38,19 @@ real API data, or a real error.
 
 | Page | Shows | Backed by |
 |---|---|---|
-| Overview `/` | Today's KPIs, open exposure, the 30-day match-rate trend, exposure by PSP | `/summary`, `/trend`, `/psp-health`, `/exposure` |
-| Discrepancies | Filterable list. The detail panel has the evidence, the audit trail, and a resolve / false-positive form that requires a note. | `/discrepancies`, `/discrepancies/{id}/events`, `/discrepancies/{id}/resolve` |
-| PSP health | Events in the last 24 h, last event time, 7-day match rate and open exposure per PSP | `/psp-health`, `/exposure` |
+| Overview `/` | Headline figures, the match-rate and volume trend (7/30/90 days), exposure by age and PSP, what needs attention, latest pipeline runs | `/summary`, `/trend`, `/exposure/aging`, `/discrepancies`, `/v1/system/pipeline-runs` |
+| Inbox `/inbox` | Keyboard-first discrepancy triage. Evidence per type, the audit trail as a timeline, single and bulk resolve (with optimistic update and rollback on failure). Filters live in the URL. | `/discrepancies`, `…/{id}/events`, `…/{id}/resolve`, `…/bulk-resolve` |
+| Transactions `/transactions` | Silver explorer with search and filters. A drawer traces lineage from Kafka offset through Bronze and Silver to the match and any discrepancies. | `/transactions`, `/transactions/{id}` |
+| Matches `/matches` | Matched pairs and an inspector: both legs side by side, the delta, and per-signal confidence | `/pairs`, `/pairs/{id}` |
+| PSP health | Event freshness, 24 h volume, 7-day match rate and open exposure per PSP | `/psp-health`, `/exposure` |
+| Activity | Pipeline run history with status, duration and records processed/failed | `/v1/system/pipeline-runs` |
 | Daily return (experimental) | Generated daily summaries, with CSV download | `/v1/reports/daily` |
 | System | Per-dependency readiness, including a degraded `503` body | `/health/ready` |
+
+Everywhere: `Ctrl/⌘ K` opens a command palette (pages, actions, live search), `?` lists keyboard
+shortcuts, `g` then a letter jumps between pages. Theme (system/light/dark) and density
+(comfortable/compact) are remembered per viewer. All motion respects the OS reduced-motion setting.
+Design system: `dashboard/DESIGN.md`. Screenshots: `dashboard/docs/screenshots/`.
 
 The browser never talks to the API directly. It calls `/api/mmr/*` on the dashboard server, which adds
 `DASHBOARD_API_KEY` and forwards only an allow-list of routes. Anyone who can open the dashboard acts
