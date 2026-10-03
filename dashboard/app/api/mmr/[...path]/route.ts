@@ -14,8 +14,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /** Only the read/resolve surface the dashboard uses is reachable. */
-const ALLOWED_PREFIXES = ['health/', 'v1/reconciliation/', 'v1/reports/'];
-const ALLOWED_EXACT = new Set(['health', 'health/ready']);
+const ALLOWED_PREFIXES = ['health/', 'v1/reconciliation/', 'v1/reports/', 'v1/system/'];
+const ALLOWED_EXACT = new Set(['health', 'health/ready', 'v1/search']);
 
 /** Response headers worth passing back to the browser. */
 const PASS_RESPONSE_HEADERS = ['content-type', 'retry-after', 'x-request-id', 'cache-control'];
@@ -45,7 +45,13 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
   // cross-site form or fetch would otherwise act with the server-side key.
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     const origin = req.headers.get('origin');
-    if (!origin || new URL(origin).host !== req.headers.get('host')) {
+    let originHost: string | null = null;
+    try {
+      originHost = origin ? new URL(origin).host : null;
+    } catch {
+      originHost = null; // "null" or malformed Origin
+    }
+    if (!originHost || originHost !== req.headers.get('host')) {
       return json(403, 'Cross-origin request rejected');
     }
   }
