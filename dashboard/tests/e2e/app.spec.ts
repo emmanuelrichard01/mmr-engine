@@ -232,6 +232,22 @@ test.describe('preferences', () => {
     const attrs = await page.evaluate(() => [document.documentElement.dataset.theme, document.documentElement.dataset.density]);
     expect(attrs).toEqual(['dark', 'compact']);
   });
+
+  test('with reduced motion, every page hydrates cleanly and keeps the theme', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'error') errors.push(m.text());
+    });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.addInitScript(() => localStorage.setItem('mmr-theme', 'dark'));
+    for (const p of PAGES) {
+      await page.goto(p.path);
+      await expect(page.getByRole('heading', { level: 1, name: p.heading })).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      expect(await page.evaluate(() => document.documentElement.dataset.theme), p.path).toBe('dark');
+    }
+    expect(errors).toEqual([]);
+  });
 });
 
 test.describe('proxy', () => {
