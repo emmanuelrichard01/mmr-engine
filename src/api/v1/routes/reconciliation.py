@@ -127,16 +127,33 @@ async def get_trend(days: int = Query(30, ge=1, le=180)) -> dict[str, Any]:
             (
                 await session.execute(
                     text("""
-                SELECT d::date AS day,
-                       COUNT(s.id) AS total,
-                       COUNT(m.transaction_id) AS matched
-                FROM generate_series(CAST(:start AS date), CAST(:end AS date), INTERVAL '1 day') d
-                LEFT JOIN silver_canonical_transactions s
-                    ON (s.initiated_at AT TIME ZONE 'Africa/Lagos')::date = d::date
-                   AND s.transaction_type IN ('credit', 'debit')
-                LEFT JOIN gold_matched_transactions m ON m.transaction_id = s.id
-                GROUP BY d
-                ORDER BY d
+                WITH days AS (
+                    SELECT d::date AS day
+                    FROM generate_series(CAST(:start AS date), CAST(:end AS date), INTERVAL '1 day') d
+                ),
+                tx AS (
+                    SELECT (s.initiated_at AT TIME ZONE 'Africa/Lagos')::date AS day,
+                           COUNT(*) AS total,
+                           COUNT(m.transaction_id) AS matched,
+                           COALESCE(SUM(s.amount_ngn), 0) AS volume
+                    FROM silver_canonical_transactions s
+                    LEFT JOIN gold_matched_transactions m ON m.transaction_id = s.id
+                    WHERE s.transaction_type IN ('credit', 'debit')
+                      AND s.initiated_at >= CAST(:start AS date) - INTERVAL '1 hour'
+                    GROUP BY 1
+                ),
+                disc AS (
+                    SELECT (raised_at AT TIME ZONE 'Africa/Lagos')::date AS day, COUNT(*) AS raised
+                    FROM gold_discrepancies
+                    WHERE raised_at >= CAST(:start AS date) - INTERVAL '1 hour'
+                    GROUP BY 1
+                )
+                SELECT days.day, COALESCE(tx.total, 0) AS total, COALESCE(tx.matched, 0) AS matched,
+                       COALESCE(tx.volume, 0) AS volume, COALESCE(disc.raised, 0) AS raised
+                FROM days
+                LEFT JOIN tx USING (day)
+                LEFT JOIN disc USING (day)
+                ORDER BY days.day
             """),
                     {"start": start, "end": end},
                 )
@@ -151,6 +168,8 @@ async def get_trend(days: int = Query(30, ge=1, le=180)) -> dict[str, Any]:
                 "total": r["total"],
                 "matched": r["matched"],
                 "match_rate_pct": round(r["matched"] / r["total"] * 100, 2) if r["total"] else None,
+                "volume_ngn": money(r["volume"]),
+                "discrepancies_raised": r["raised"],
             }
             for r in rows
         ]
@@ -443,6 +462,77 @@ async def resolve_discrepancy(request: Request, discrepancy_id: UUID, body: Reso
 
     log.info("discrepancy.resolved", discrepancy_id=disc_id, outcome=body.outcome)
     return {"discrepancy_id": disc_id, "status": body.outcome, "resolved_by": actor}
+
+
+class BulkResolveRequest(BaseModel):
+    ids: list[UUID] = Field(min_length=1, max_length=100)
+    resolution_note: str = Field(min_length=10, max_length=2000)
+    outcome: Literal["resolved", "false_positive"] = "resolved"
+
+
+@router.post(
+    "/discrepancies/bulk-resolve",
+    summary="Resolve up to 100 discrepancies with one note",
+    dependencies=[Depends(require_role(WRITE_ROLES))],
+)
+async def bulk_resolve_discrepancies(request: Request, body: BulkResolveRequest) -> dict[str, Any]:
+    """
+    All-or-nothing per item, in one transaction: each open discrepancy is
+    locked, closed and given its own audit event; ids that are unknown or
+    already closed are reported as skipped rather than failing the batch.
+    """
+    actor = getattr(request.state, "api_key_name", None) or "unknown"
+    ids = sorted({str(i) for i in body.ids})  # stable lock order avoids deadlocks
+    action = "resolved" if body.outcome == "resolved" else "marked_false_positive"
+    async with api_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    text("""
+                        SELECT id::text AS id, status::text AS status FROM gold_discrepancies
+                        WHERE id = ANY(CAST(:ids AS uuid[]))
+                        ORDER BY id
+                        FOR UPDATE
+                    """),
+                    {"ids": ids},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        found = {r["id"]: r["status"] for r in rows}
+        closable = [i for i in ids if found.get(i) not in (None, "resolved", "false_positive")]
+        if closable:
+            await session.execute(
+                text("""
+                    INSERT INTO gold_discrepancy_events (discrepancy_id, action, from_status, to_status, actor, note)
+                    SELECT d.id, :action, d.status, CAST(:outcome AS discrepancy_status_enum), :actor, :note
+                    FROM gold_discrepancies d WHERE d.id = ANY(CAST(:ids AS uuid[]))
+                """),
+                {
+                    "ids": closable,
+                    "action": action,
+                    "outcome": body.outcome,
+                    "actor": actor,
+                    "note": body.resolution_note,
+                },
+            )
+            await session.execute(
+                text("""
+                    UPDATE gold_discrepancies
+                    SET status = CAST(:outcome AS discrepancy_status_enum),
+                        resolved_at = NOW(), resolved_by = :actor,
+                        resolution_note = :note, updated_at = NOW()
+                    WHERE id = ANY(CAST(:ids AS uuid[]))
+                """),
+                {"ids": closable, "outcome": body.outcome, "actor": actor, "note": body.resolution_note},
+            )
+
+    skipped = [
+        {"id": i, "reason": "not_found" if i not in found else "already_closed"} for i in ids if i not in closable
+    ]
+    log.info("discrepancy.bulk_resolved", resolved=len(closable), skipped=len(skipped), outcome=body.outcome)
+    return {"resolved": closable, "skipped": skipped}
 
 
 # ── Exposure ──────────────────────────────────────────────────────────────

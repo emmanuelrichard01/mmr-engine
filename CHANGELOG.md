@@ -55,5 +55,5 @@ Every claim in the README is now backed by code and tests.
   non-authoritative.
 
 ### Numbers
-267 tests (14 against real PostgreSQL), `mypy --strict` clean, 16 reversible migrations, 15 tables +
+276 tests (23 against real PostgreSQL), `mypy --strict` clean, 16 reversible migrations, 15 tables +
 1 materialized view.

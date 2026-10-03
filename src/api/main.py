@@ -32,7 +32,7 @@ from sqlalchemy import text
 
 from src.api.middleware.auth import APIKeyAuthMiddleware
 from src.api.middleware.rate_limit import RateLimitMiddleware
-from src.api.v1.routes import reconciliation, reports, webhooks
+from src.api.v1.routes import reconciliation, reports, system, transactions, webhooks
 from src.config import get_settings
 from src.observability.logging import configure_logging
 from src.observability.metrics import HTTP_REQUEST_DURATION, METRICS_REGISTRY, refresh_state_gauges
@@ -142,6 +142,8 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(reconciliation.router)
+    app.include_router(transactions.router)
+    app.include_router(system.router)
     app.include_router(reports.router)
     app.include_router(webhooks.router)
 

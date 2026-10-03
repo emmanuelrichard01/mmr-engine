@@ -114,11 +114,11 @@ start an embedded PostgreSQL via `pgserver`, so they run locally without Docker.
 
 | | |
 |---|---|
-| Tests | 267, including 14 against real PostgreSQL (migrations round-trip, concurrency, triggers, grants) and property-based tests of the matching invariants |
+| Tests | 276, including 23 against real PostgreSQL (migrations round-trip, concurrency, triggers, grants) and property-based tests of the matching invariants |
 | Static checks | ruff (lint + format), `mypy --strict` with zero errors on `src/` |
 | Migrations | 16 (`000`–`015`), all reversible |
 | Tables | 15 + 1 materialized view |
-| HTTP endpoints | 14: 2 webhooks, 8 reconciliation, 2 reports, health, readiness (+ `/metrics`) |
+| HTTP endpoints | 19 documented: 2 webhooks, 13 reconciliation (incl. transaction explorer, pair inspector, bulk resolve), 2 reports, search, pipeline runs (+ `/health`, `/health/ready`, `/metrics`) |
 | PSP connectors | 2 (Paystack, Flutterwave) |
 
 ## Honest scope & limitations
