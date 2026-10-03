@@ -1,13 +1,15 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { motion, useReducedMotion } from 'motion/react';
+import { motion } from 'motion/react';
 import { DURATION, EASE_OUT } from '@/lib/motion';
 
-/** Re-mounts on every navigation: each page settles in with a short fade and lift. */
+/**
+ * Re-mounts on every navigation: each page settles in with a short fade and
+ * lift. The markup is identical with or without reduced motion (the shell's
+ * MotionConfig drops the lift and keeps a plain fade), so hydration matches.
+ */
 export default function PageTransition({ children }: { children: ReactNode }) {
-  const reduce = useReducedMotion();
-  if (reduce) return <>{children}</>;
   return (
     <motion.div
       className="h-full"

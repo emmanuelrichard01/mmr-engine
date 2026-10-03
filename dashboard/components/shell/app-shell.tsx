@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AnimatePresence, MotionConfig, motion, useReducedMotion } from 'motion/react';
 import { Menu, Search, X } from 'lucide-react';
 import { DemoModeBanner } from '@/components/notices';
 import { Toaster } from '@/components/toaster';
@@ -50,13 +50,7 @@ function MobileNav({
         transition={reduce ? { duration: DURATION.fast } : SPRING_PANEL}
       >
         <Sidebar onNavigate={onClose} onOpenPalette={onOpenPalette} onOpenShortcuts={onOpenShortcuts} />
-        <button
-          type="button"
-          onClick={onClose}
-          className="icon-btn absolute right-2 top-3"
-          aria-label="Close navigation"
-          data-autofocus
-        >
+        <button type="button" onClick={onClose} className="icon-btn absolute right-2 top-3" aria-label="Close navigation" data-autofocus>
           <X className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
         </button>
       </motion.div>
@@ -110,50 +104,59 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   return (
-    <Toaster>
-      <div className="flex h-dvh overflow-hidden bg-bg">
-        <a href="#main" className="skip-link">
-          Skip to content
-        </a>
+    // reducedMotion="user": with the OS setting on, transform and layout
+    // animations are dropped and only opacity fades remain.
+    <MotionConfig reducedMotion="user">
+      <Toaster>
+        <div className="flex h-dvh overflow-hidden bg-bg">
+          <a href="#main" className="skip-link">
+            Skip to content
+          </a>
 
-        <aside className="hidden border-r border-line lg:flex" aria-label="Sidebar">
-          <Sidebar onOpenPalette={openPalette} onOpenShortcuts={openShortcuts} />
-        </aside>
+          <aside className="hidden border-r border-line lg:flex" aria-label="Sidebar">
+            <Sidebar onOpenPalette={openPalette} onOpenShortcuts={openShortcuts} />
+          </aside>
 
-        <AnimatePresence>
-          {mobileOpen && (
-            <MobileNav key="mobile-nav" onClose={() => setMobileOpen(false)} onOpenPalette={openPalette} onOpenShortcuts={openShortcuts} />
-          )}
-        </AnimatePresence>
+          <AnimatePresence>
+            {mobileOpen && (
+              <MobileNav
+                key="mobile-nav"
+                onClose={() => setMobileOpen(false)}
+                onOpenPalette={openPalette}
+                onOpenShortcuts={openShortcuts}
+              />
+            )}
+          </AnimatePresence>
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-bg-subtle px-3 lg:hidden">
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => setMobileOpen(true)}
-              aria-label="Open navigation"
-              aria-expanded={mobileOpen}
-            >
-              <Menu className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden="true" />
-            </button>
-            <BrandMark className="h-6 w-6" />
-            <p className="min-w-0 flex-1 truncate text-[14px] font-semibold text-fg">{current?.label ?? 'MMR'}</p>
-            <button type="button" className="icon-btn" onClick={openPalette} aria-label="Search or jump to">
-              <Search className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden="true" />
-            </button>
-          </header>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-bg-subtle px-3 lg:hidden">
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setMobileOpen(true)}
+                aria-label="Open navigation"
+                aria-expanded={mobileOpen}
+              >
+                <Menu className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden="true" />
+              </button>
+              <BrandMark className="h-6 w-6" />
+              <p className="min-w-0 flex-1 truncate text-[14px] font-semibold text-fg">{current?.label ?? 'MMR'}</p>
+              <button type="button" className="icon-btn" onClick={openPalette} aria-label="Search or jump to">
+                <Search className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden="true" />
+              </button>
+            </header>
 
-          {DEMO_MODE && <DemoModeBanner />}
+            {DEMO_MODE && <DemoModeBanner />}
 
-          <main id="main" tabIndex={-1} className="relative min-h-0 flex-1 overflow-y-auto outline-none">
-            {children}
-          </main>
+            <main id="main" tabIndex={-1} className="relative min-h-0 flex-1 overflow-y-auto outline-none">
+              {children}
+            </main>
+          </div>
+
+          <CommandPalette open={paletteOpen} onClose={closePalette} onOpenShortcuts={openShortcuts} />
+          <ShortcutsDialog open={shortcutsOpen} onClose={closeShortcuts} />
         </div>
-
-        <CommandPalette open={paletteOpen} onClose={closePalette} onOpenShortcuts={openShortcuts} />
-        <ShortcutsDialog open={shortcutsOpen} onClose={closeShortcuts} />
-      </div>
-    </Toaster>
+      </Toaster>
+    </MotionConfig>
   );
 }

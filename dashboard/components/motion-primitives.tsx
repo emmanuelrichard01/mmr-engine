@@ -1,7 +1,7 @@
 'use client';
 
 import { type ReactNode } from 'react';
-import { motion, useReducedMotion } from 'motion/react';
+import { motion } from 'motion/react';
 import { DURATION, EASE_OUT, STAGGER_LIMIT, STAGGER_STEP } from '@/lib/motion';
 
 /**
@@ -19,12 +19,9 @@ export function Reveal({
   delay?: number;
   as?: 'div' | 'section';
 }) {
-  const reduce = useReducedMotion();
+  // Same element with or without reduced motion, so server and client markup
+  // match; the shell's MotionConfig turns the lift into a plain fade.
   const Comp = as === 'section' ? motion.section : motion.div;
-  if (reduce) {
-    const Plain = as;
-    return <Plain className={className}>{children}</Plain>;
-  }
   return (
     <Comp
       className={className}
