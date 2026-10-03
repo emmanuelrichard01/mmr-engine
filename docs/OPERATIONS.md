@@ -24,7 +24,7 @@ Everything the demo shows is synthetic.
 
 | Command | Effect |
 |---|---|
-| `make demo-full` | Start the stack, generate 30 days of events, replay them through the signed webhooks, wait for Silver to settle, run matching, and verify every layer holds data. Exits non-zero if a layer is empty. |
+| `make demo-full` | Start the stack, generate 14 days of events (the matching lookback), replay them through the signed webhooks, wait for Silver to settle, run matching, and verify every layer holds data. Exits non-zero if a layer is empty. |
 | `make demo` | The same with 7 days of data. |
 | `make demo-reset` | Destroy all volumes, then `demo-full`. |
 | `make webhook` / `webhook-batch` / `webhook-unmatched` / `webhook-duplicate` | Fire individual signed webhook scenarios. |

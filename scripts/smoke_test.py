@@ -42,13 +42,13 @@ def main():
 
     success = True
     # Test simple health check
-    if not check_endpoint("http://localhost:8000/health"):
+    if not check_endpoint("http://127.0.0.1:8000/health"):
         success = False
 
     print()
 
     # Test deep health check (which checks PG, Kafka, MinIO connectivity)
-    if not check_endpoint("http://localhost:8000/health/ready"):
+    if not check_endpoint("http://127.0.0.1:8000/health/ready"):
         success = False
 
     if success:

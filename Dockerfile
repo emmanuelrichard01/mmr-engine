@@ -22,6 +22,7 @@ RUN uv venv /opt/venv && VIRTUAL_ENV=/opt/venv uv pip install --no-cache .
 
 FROM python:3.12-slim-bookworm AS runtime
 ENV PATH="/opt/venv/bin:$PATH" \
+    PREFECT_HOME=/tmp/prefect \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

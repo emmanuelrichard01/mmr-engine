@@ -14,10 +14,13 @@ Every step is verified before the next begins.
 Final output shows actual DB record counts, not estimates.
 """
 import argparse
+import json
 import subprocess
 import sys
 import time
 from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
 
@@ -87,6 +90,39 @@ def wait_for_postgres(timeout: int = 90) -> bool:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def load_fx_snapshots(path: Path) -> None:
+    """
+    Load the generator's FX history into silver_fx_rate_snapshots so non-NGN
+    events convert at a point-in-time rate (as FX capture would in production).
+    Each snapshot is valid until the next one for its pair; the last is current.
+    """
+    snapshots = json.loads(path.read_text(encoding="utf-8"))
+    by_pair: dict[str, list[dict]] = {}
+    for snap in snapshots:
+        by_pair.setdefault(snap["currency_pair"], []).append(snap)
+    values = []
+    for pair, snaps in by_pair.items():
+        snaps.sort(key=lambda s: s["captured_at"])
+        for i, snap in enumerate(snaps):
+            until = f"'{snaps[i + 1]['captured_at']}'" if i + 1 < len(snaps) else "NULL"
+            values.append(
+                f"('{pair}', {Decimal(snap['rate'])}, 'demo-synthetic', "
+                f"'{snap['captured_at']}', '{snap['captured_at']}', {until})"
+            )
+    sql = (
+        "BEGIN; DELETE FROM silver_fx_rate_snapshots WHERE source_provider = 'demo-synthetic' "
+        "AND id NOT IN (SELECT fx_rate_snapshot_id FROM silver_canonical_transactions "
+        "WHERE fx_rate_snapshot_id IS NOT NULL); "
+        "UPDATE silver_fx_rate_snapshots SET valid_until = NOW() WHERE valid_until IS NULL; "
+        "INSERT INTO silver_fx_rate_snapshots (currency_pair, rate, source_provider, captured_at, valid_from, valid_until) "
+        f"VALUES {', '.join(values)}; COMMIT;"
+    )
+    result = run(["docker", "compose", "exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
+                  "-U", "postgres", "-d", "reconciliation", "-c", sql], check=False, capture=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Loading FX snapshots failed: {result.stderr.strip()[:300]}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="MMR Engine full local demo")
     parser.add_argument("--days", type=int, default=7, help="Days of synthetic data to generate and replay")
@@ -95,8 +131,7 @@ def main():
 
     start_time = datetime.now()
     total_steps = 6
-    print(f"
-{BOLD}  MMR Engine — full demo (synthetic data){RESET}")
+    print(f"\n{BOLD}  MMR Engine — full demo (synthetic data){RESET}")
     print(f"  {DIM}{args.days} days · monitoring={args.monitoring}{RESET}")
 
     try:
@@ -110,6 +145,9 @@ def main():
         step(2, total_steps, f"Generating {args.days} days of synthetic events")
         run([sys.executable, "scripts/generate_demo_data.py", "--days", str(args.days)])
         ok("Synthetic events written to scripts/demo_data/")
+
+        load_fx_snapshots(Path("scripts/demo_data/fx_rates.json"))
+        ok("FX snapshots loaded (synthetic rates for the demo period)")
 
         step(3, total_steps, "Replaying events through the signed webhook endpoints")
         run([sys.executable, "scripts/replay_demo_data.py", "--delay", "0"])
@@ -144,19 +182,17 @@ def main():
             fail(f"Empty or unreadable: {', '.join(failures)}. Run 'make logs-errors'.")
             sys.exit(1)
     except KeyboardInterrupt:
-        print(f"
-  {YELLOW}⚠{RESET}  Interrupted")
+        print(f"\n  {YELLOW}⚠{RESET}  Interrupted")
         sys.exit(130)
     except RuntimeError as e:
         fail(f"Step failed: {e}")
         sys.exit(1)
 
     silver, matched = counts["silver_canonical_transactions"], counts["gold_matched_transactions"]
-    print(f"
-{BOLD}{GREEN}  ✓ Demo ready{RESET} in {(datetime.now() - start_time).seconds}s")
+    print(f"\n{BOLD}{GREEN}  ✓ Demo ready{RESET} in {(datetime.now() - start_time).seconds}s")
     print(f"    Match rate (all time): {matched / silver * 100:.1f}% of {silver:,} transactions")
     print(f"    Dashboard   http://localhost:3000")
-    print(f"    API docs    http://localhost:8000/docs")
+    print(f"    API docs    http://127.0.0.1:8000/docs")
     print(f"    Prefect UI  http://localhost:4200")
     if args.monitoring:
         print(f"    Grafana     http://localhost:3001")

@@ -34,7 +34,10 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from pathlib import Path
+
 import httpx
+from dotenv import load_dotenv
 
 # Configure stdout for UTF-8 encoding (especially on Windows)
 if hasattr(sys.stdout, "reconfigure"):
@@ -42,13 +45,14 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "http://127.0.0.1:8000"
 PAYSTACK_WEBHOOK_URL = f"{API_BASE_URL}/v1/webhooks/paystack"
 FLUTTERWAVE_WEBHOOK_URL = f"{API_BASE_URL}/v1/webhooks/flutterwave"
 
 # Default test credentials (override via environment)
 import os
 
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")  # sign with the API's own secrets
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "sk_test_dummy_key")
 FLUTTERWAVE_SECRET_HASH = os.environ.get("FLUTTERWAVE_SECRET_HASH", "test_flw_hash")
 

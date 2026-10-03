@@ -118,15 +118,15 @@ check: lint typecheck security-check test ## Everything CI runs for Python
 
 ## ── Demo & data (all synthetic) ────────────────────────────────────────────
 
-demo-full: ## Stack + 30 days of synthetic data + matching, verified end to end
-	@$(PYTHON) scripts/demo_full.py --days 30 --monitoring
+demo-full: ## Stack + 14 days of synthetic data (the matching lookback) + matching, verified
+	@$(PYTHON) scripts/demo_full.py --days 14 --monitoring
 
 demo: ## Quicker demo: 7 days of synthetic data
 	@$(PYTHON) scripts/demo_full.py --days 7
 
 demo-reset: ## Destroy all data, then demo-full on a fresh stack (DESTRUCTIVE)
 	docker compose -f $(COMPOSE_FILE) -f $(MONITORING_FILE) down -v
-	@$(PYTHON) scripts/demo_full.py --days 30 --monitoring
+	@$(PYTHON) scripts/demo_full.py --days 14 --monitoring
 
 demo-data: ## Generate 30 days of synthetic events (scripts/demo_data/)
 	$(PYTHON) scripts/generate_demo_data.py --days 30

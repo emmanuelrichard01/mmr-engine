@@ -85,7 +85,7 @@ Requirements: Docker, Python 3.12 (with [uv](https://docs.astral.sh/uv/) recomme
 ```bash
 cp .env.example .env            # fill in every "replace-me"
 make up                         # stack + automatic migrations
-make demo-full                  # 30 days of synthetic data → replay → match → verify
+make demo-full                  # 14 days of synthetic data → replay → match → verify
 make api-key NAME=dashboard SCOPE=write   # then put the key in DASHBOARD_API_KEY
 ```
 

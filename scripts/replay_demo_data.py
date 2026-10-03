@@ -15,17 +15,19 @@ import time
 import argparse
 from pathlib import Path
 import httpx
+from dotenv import load_dotenv
 
 # Configure stdout for UTF-8 encoding (especially on Windows)
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 # API Configuration
-API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
 PAYSTACK_WEBHOOK_URL = f"{API_BASE_URL}/v1/webhooks/paystack"
 FLUTTERWAVE_WEBHOOK_URL = f"{API_BASE_URL}/v1/webhooks/flutterwave"
 
 # Secret keys for signing
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")  # sign with the API's own secrets
 PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY", "sk_test_dummy_key")
 FLUTTERWAVE_SECRET_HASH = os.environ.get("FLUTTERWAVE_SECRET_HASH", "test_flw_hash")
 

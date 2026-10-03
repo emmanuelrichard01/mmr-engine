@@ -360,6 +360,10 @@ def main():
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Replace, never accumulate: stale day files from an earlier, longer run
+    # would otherwise be replayed alongside the new ones.
+    for stale in output_dir.glob("day_*.json"):
+        stale.unlink()
 
     all_events = []
     now = datetime.now(timezone.utc)
