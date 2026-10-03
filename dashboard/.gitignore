@@ -1,0 +1,5 @@
+# Demo-mode build used by the end-to-end tests
+.next-e2e/
+test-results/
+playwright-report/
+blob-report/

@@ -1,9 +1,13 @@
 'use client';
 
 // ─── Data hooks ──────────────────────────────────────────────────────────────
-// Real API data or a real error — never a silent substitute. Hooks re-fetch
+// Real API data or a real error, never a silent substitute. Hooks re-fetch
 // whenever their key (the serialised request parameters) changes, cancel
 // stale requests, and optionally poll while the tab is visible.
+//
+// The last good response per key is kept in memory for this tab, so going back
+// to a page shows what was there a moment ago (marked as refreshing) instead
+// of a skeleton. It is the same data the API returned; nothing is invented.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -12,15 +16,22 @@ import {
   fetchDiscrepancies,
   fetchDiscrepancyEvents,
   fetchExposure,
+  fetchExposureAging,
+  fetchPair,
+  fetchPairs,
+  fetchPipelineRuns,
   fetchPspHealth,
   fetchReadiness,
+  fetchSearch,
   fetchSummary,
+  fetchTransaction,
+  fetchTransactions,
   fetchTrend,
-  resolveDiscrepancy,
+  MIN_SEARCH_LENGTH,
   toApiError,
   type DiscrepancyFilters,
-  type ResolveOutcome,
-  type ResolveResponse,
+  type PairFilters,
+  type TransactionFilters,
 } from './api';
 
 export interface QueryResult<T> {
@@ -43,37 +54,51 @@ interface QueryState<T> {
   updatedAt: number | null;
 }
 
-function useQuery<T>(
+const cache = new Map<string, { data: unknown; updatedAt: number }>();
+const mounted = new Map<string, Set<() => void>>();
+
+/** Drop cached responses whose key starts with any prefix, and re-fetch the mounted ones. */
+export function invalidateQueries(...prefixes: string[]) {
+  const matches = (key: string) => prefixes.some((p) => key.startsWith(p));
+  for (const key of [...cache.keys()]) if (matches(key)) cache.delete(key);
+  for (const [key, refetchers] of mounted) if (matches(key)) refetchers.forEach((r) => r());
+}
+
+function initialState<T>(key: string, enabled: boolean): QueryState<T> {
+  const hit = cache.get(key);
+  return {
+    key,
+    data: (hit?.data as T) ?? null,
+    error: null,
+    pending: enabled,
+    updatedAt: hit?.updatedAt ?? null,
+  };
+}
+
+export function useQuery<T>(
   key: string,
   fetcher: (signal: AbortSignal) => Promise<T>,
-  options: { refreshMs?: number } = {},
+  options: { refreshMs?: number; enabled?: boolean } = {},
 ): QueryResult<T> {
-  const { refreshMs } = options;
+  const { refreshMs, enabled = true } = options;
   const fetcherRef = useRef(fetcher);
   useEffect(() => {
     fetcherRef.current = fetcher;
   });
 
   const [tick, setTick] = useState(0);
-  const [state, setState] = useState<QueryState<T>>({
-    key,
-    data: null,
-    error: null,
-    pending: true,
-    updatedAt: null,
-  });
+  const [state, setState] = useState<QueryState<T>>(() => initialState<T>(key, enabled));
 
   useEffect(() => {
+    if (!enabled) return;
     const controller = new AbortController();
-    setState((prev) =>
-      prev.key === key
-        ? { ...prev, pending: true }
-        : { key, data: null, error: null, pending: true, updatedAt: null },
-    );
+    setState((prev) => (prev.key === key ? { ...prev, pending: true } : initialState<T>(key, true)));
     fetcherRef.current(controller.signal).then(
       (data) => {
         if (controller.signal.aborted) return;
-        setState({ key, data, error: null, pending: false, updatedAt: Date.now() });
+        const updatedAt = Date.now();
+        cache.set(key, { data, updatedAt });
+        setState({ key, data, error: null, pending: false, updatedAt });
       },
       (err: unknown) => {
         if (controller.signal.aborted) return;
@@ -87,19 +112,33 @@ function useQuery<T>(
       },
     );
     return () => controller.abort();
-  }, [key, tick]);
+  }, [key, tick, enabled]);
+
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
-    if (!refreshMs) return;
+    if (!enabled) return;
+    const set = mounted.get(key) ?? new Set();
+    set.add(refetch);
+    mounted.set(key, set);
+    return () => {
+      set.delete(refetch);
+      if (set.size === 0) mounted.delete(key);
+    };
+  }, [key, refetch, enabled]);
+
+  useEffect(() => {
+    if (!refreshMs || !enabled) return;
     const id = window.setInterval(() => {
       if (document.visibilityState === 'visible') setTick((t) => t + 1);
     }, refreshMs);
     return () => window.clearInterval(id);
-  }, [refreshMs]);
-
-  const refetch = useCallback(() => setTick((t) => t + 1), []);
+  }, [refreshMs, enabled]);
 
   const current = state.key === key;
+  if (!enabled) {
+    return { data: null, error: null, isLoading: false, isRefreshing: false, updatedAt: null, refetch };
+  }
   return {
     data: current ? state.data : null,
     error: current ? state.error : null,
@@ -131,7 +170,11 @@ export function usePspHealth() {
 }
 
 export function useExposure() {
-  return useQuery('exposure', (s) => fetchExposure(s), { refreshMs: MINUTE });
+  return useQuery('exposure:totals', (s) => fetchExposure(s), { refreshMs: MINUTE });
+}
+
+export function useExposureAging() {
+  return useQuery('exposure:aging', (s) => fetchExposureAging(s), { refreshMs: MINUTE });
 }
 
 /** Filters are part of the query key, so any change triggers a fresh API request. */
@@ -140,39 +183,43 @@ export function useDiscrepancies(filters: DiscrepancyFilters, options: { refresh
   return useQuery(key, (s) => fetchDiscrepancies(filters, s), options);
 }
 
-export function useDiscrepancyEvents(id: number) {
-  return useQuery(`discrepancy-events:${id}`, (s) => fetchDiscrepancyEvents(id, s));
+export function useDiscrepancyEvents(id: string | null) {
+  return useQuery(`discrepancy-events:${id}`, (s) => fetchDiscrepancyEvents(id as string, s), { enabled: id !== null });
 }
 
 export function useDailyReports(params: { limit: number; offset: number }) {
   return useQuery(`reports:${params.limit}:${params.offset}`, (s) => fetchDailyReports(params, s));
 }
 
-// ─── Mutations ───────────────────────────────────────────────────────────────
-
-export function useResolveDiscrepancy() {
-  const [isResolving, setIsResolving] = useState(false);
-  const [error, setError] = useState<ApiError | null>(null);
-
-  const resolve = useCallback(async (id: number, note: string, outcome: ResolveOutcome): Promise<ResolveResponse | null> => {
-    setIsResolving(true);
-    setError(null);
-    try {
-      return await resolveDiscrepancy(id, note, outcome);
-    } catch (err) {
-      setError(toApiError(err));
-      return null;
-    } finally {
-      setIsResolving(false);
-    }
-  }, []);
-
-  const reset = useCallback(() => setError(null), []);
-
-  return { resolve, isResolving, error, reset };
+export function useTransactions(filters: TransactionFilters) {
+  const key = `transactions:${JSON.stringify(filters)}`;
+  return useQuery(key, (s) => fetchTransactions(filters, s));
 }
 
-// ─── Clock ───────────────────────────────────────────────────────────────────
+export function useTransaction(id: string | null) {
+  return useQuery(`transaction:${id}`, (s) => fetchTransaction(id as string, s), { enabled: id !== null });
+}
+
+export function usePairs(filters: PairFilters) {
+  return useQuery(`pairs:${JSON.stringify(filters)}`, (s) => fetchPairs(filters, s));
+}
+
+export function usePair(id: string | null) {
+  return useQuery(`pair:${id}`, (s) => fetchPair(id as string, s), { enabled: id !== null });
+}
+
+export function usePipelineRuns(params: { limit: number; flow_name?: string }, options: { refreshMs?: number } = {}) {
+  return useQuery(`pipeline-runs:${params.limit}:${params.flow_name ?? ''}`, (s) => fetchPipelineRuns(params, s), {
+    refreshMs: options.refreshMs ?? 30_000,
+  });
+}
+
+export function useSearch(q: string) {
+  const term = q.trim();
+  return useQuery(`search:${term}`, (s) => fetchSearch(term, s), { enabled: term.length >= MIN_SEARCH_LENGTH });
+}
+
+// ─── Small client utilities ──────────────────────────────────────────────────
 
 /**
  * Current time for relative labels ("6h ago"). Null during server render and
@@ -186,4 +233,27 @@ export function useNow(intervalMs = 60_000): number | null {
     return () => window.clearInterval(id);
   }, [intervalMs]);
   return now;
+}
+
+/** A value that only settles after `delayMs` without changes. */
+export function useDebounced<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(id);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/** True when the viewport is at least `minWidth` px wide; false during SSR. */
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const update = () => setMatches(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, [query]);
+  return matches;
 }

@@ -8,7 +8,7 @@ import tseslint from 'typescript-eslint';
 const compat = new FlatCompat({ baseDirectory: dirname(fileURLToPath(import.meta.url)) });
 
 export default tseslint.config(
-  { ignores: ['.next/**', 'node_modules/**', 'next-env.d.ts', 'out/**'] },
+  { ignores: ['.next/**', '.next-e2e/**', 'node_modules/**', 'next-env.d.ts', 'out/**', 'test-results/**', 'playwright-report/**'] },
   ...compat.extends('next/core-web-vitals'),
   ...tseslint.configs.recommended,
 );
