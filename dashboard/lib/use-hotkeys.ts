@@ -98,9 +98,3 @@ export function useHotkeys(bindings: Record<string, HotkeyHandler>, options: Hot
     };
   }, [allowInInputs, allowInDialogs, enabled]);
 }
-
-/** "⌘" on Apple platforms, "Ctrl" elsewhere; null until mounted so SSR markup is stable. */
-export function modKeyLabel(): string {
-  if (typeof navigator === 'undefined') return 'Ctrl';
-  return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl';
-}

@@ -222,6 +222,27 @@ test.describe('explorers', () => {
   });
 });
 
+test.describe('performance', () => {
+  for (const p of PAGES) {
+    test(`${p.heading} loads without layout shift (CLS < 0.1)`, async ({ page }) => {
+      await page.addInitScript(() => {
+        (window as unknown as { __cls: number }).__cls = 0;
+        new PerformanceObserver((list) => {
+          for (const entry of list.getEntries() as (PerformanceEntry & { value: number; hadRecentInput: boolean })[]) {
+            if (!entry.hadRecentInput) (window as unknown as { __cls: number }).__cls += entry.value;
+          }
+        }).observe({ type: 'layout-shift', buffered: true });
+      });
+      await page.goto(p.path);
+      await expect(page.getByRole('heading', { level: 1, name: p.heading })).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      await page.waitForTimeout(800);
+      const cls = await page.evaluate(() => (window as unknown as { __cls: number }).__cls);
+      expect(cls, `${p.path} CLS`).toBeLessThan(0.1);
+    });
+  }
+});
+
 test.describe('preferences', () => {
   test('theme and density persist across reloads without a flash', async ({ page }) => {
     await page.goto('/system');
