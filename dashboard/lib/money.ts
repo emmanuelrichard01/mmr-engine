@@ -45,6 +45,20 @@ export function formatNgn(value: DecimalString | null | undefined): string {
   return kobo === null ? '—' : formatKobo(kobo);
 }
 
+const CURRENCY_SIGN: Record<string, string> = { NGN: '₦', USD: '$', EUR: '€', GBP: '£' };
+
+/**
+ * Format an amount in its own currency: "$912.34", "€10.00", or "1,000.00 KES"
+ * for currencies without a sign here. Integer arithmetic, like formatNgn.
+ */
+export function formatAmountIn(value: DecimalString | null | undefined, currency: string): string {
+  const kobo = toKobo(value);
+  if (kobo === null) return '—';
+  const p = koboParts(kobo);
+  const sign = CURRENCY_SIGN[currency.toUpperCase()];
+  return sign ? `${p.sign}${sign}${p.whole}.${p.fraction}` : `${p.sign}${p.whole}.${p.fraction} ${currency.toUpperCase()}`;
+}
+
 /** Sum decimal strings exactly. Unparseable values are ignored. */
 export function sumKobo(values: (DecimalString | null | undefined)[]): bigint {
   return values.reduce<bigint>((acc, v) => acc + (toKobo(v) ?? ZERO), ZERO);

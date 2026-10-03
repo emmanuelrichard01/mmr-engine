@@ -3,7 +3,7 @@
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { motion, useReducedMotion } from 'motion/react';
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, RotateCcw, Search, X } from 'lucide-react';
+import { ArrowLeftRight, Search, SlidersHorizontal, X } from 'lucide-react';
 import { MatchBadge, SettlementBadge, StatusBadge } from '@/components/badges';
 import { CopyButton } from '@/components/copy-button';
 import { EmptyState } from '@/components/empty-state';
@@ -17,15 +17,9 @@ import { PspIcon, PspName } from '@/components/psp-logos';
 import { Sheet } from '@/components/sheet';
 import { TableRowsSkeleton } from '@/components/table-skeleton';
 import { TabList, TabPanel } from '@/components/tabs';
-import {
-  PSPS,
-  SETTLEMENT_STATUSES,
-  TRANSACTION_TYPES,
-  type TransactionDetailResponse,
-  type TransactionSummary,
-} from '@/lib/api';
-import { useTransaction, useTransactions } from '@/lib/hooks';
-import { formatNgn } from '@/lib/money';
+import { PSPS, SETTLEMENT_STATUSES, TRANSACTION_TYPES, type TransactionDetailResponse, type TransactionSummary } from '@/lib/api';
+import { useMediaQuery, useTransaction, useTransactions } from '@/lib/hooks';
+import { formatAmountIn, formatNgn } from '@/lib/money';
 import { countActive, param } from '@/lib/url-state';
 import { useRowKeys } from '@/lib/use-row-keys';
 import { useUrlState } from '@/lib/use-url-state';
@@ -48,9 +42,37 @@ const SCHEMA = {
 const FILTER_KEYS = ['q', 'psp', 'type', 'match', 'settlement', 'from', 'to'] as const;
 const URL_OPTIONS = { resetKey: 'offset', resetOnChange: [...FILTER_KEYS, 'size'] } as const;
 
-const TYPE_ICON = { credit: ArrowDownLeft, debit: ArrowUpRight, reversal: RotateCcw } as const;
+function TableSkeletonList() {
+  return (
+    <ul aria-hidden="true">
+      {Array.from({ length: 8 }, (_, i) => (
+        <li key={i} className="flex items-center justify-between gap-3 border-b border-line px-4 py-3.5">
+          <span className="space-y-1.5">
+            <Skeleton className="h-3.5 w-36" />
+            <Skeleton className="h-3 w-48" />
+          </span>
+          <Skeleton className="h-3.5 w-20" />
+        </li>
+      ))}
+    </ul>
+  );
+}
 
-// ── Row ──────────────────────────────────────────────────────────────────────
+/** The naira amount, with the original currency amount beneath it when it was not NGN. */
+function Amount({ t, align = 'right' }: { t: TransactionSummary; align?: 'right' | 'left' }) {
+  return (
+    <span className={cn('inline-flex flex-col leading-tight', align === 'right' ? 'items-end' : 'items-start')}>
+      <span className="num font-medium text-fg">{formatNgn(t.amount_ngn)}</span>
+      {t.currency_raw !== 'NGN' && (
+        <span className="t-caption num" title={`Received as ${formatAmountIn(t.amount_raw, t.currency_raw)}, converted to naira`}>
+          {formatAmountIn(t.amount_raw, t.currency_raw)}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// ── Rows ─────────────────────────────────────────────────────────────────────
 
 const TxRow = memo(function TxRow({
   t,
@@ -66,15 +88,24 @@ const TxRow = memo(function TxRow({
   onOpen: (id: string) => void;
 }) {
   const reduce = useReducedMotion();
-  const Icon = TYPE_ICON[t.transaction_type as keyof typeof TYPE_ICON] ?? ArrowLeftRight;
   return (
-    <motion.tr {...(animateIn ? rowReveal(index, reduce) : {})} data-interactive data-active={open || undefined} onClick={() => onOpen(t.id)}>
+    <motion.tr
+      {...(animateIn ? rowReveal(index, reduce) : {})}
+      data-interactive
+      data-active={open || undefined}
+      onClick={() => onOpen(t.id)}
+    >
       <td className="relative">
-        <button type="button" data-row-button className="row-button inline-flex items-center gap-2.5" onClick={(e) => { e.stopPropagation(); onOpen(t.id); }}>
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] bg-inset text-fg-muted" aria-hidden="true">
-            <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
-          </span>
-          <span className="t-mono text-fg">{t.psp_transaction_ref}</span>
+        <button
+          type="button"
+          data-row-button
+          className="row-button t-mono text-fg"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen(t.id);
+          }}
+        >
+          {t.psp_transaction_ref}
         </button>
       </td>
       <td>
@@ -82,8 +113,7 @@ const TxRow = memo(function TxRow({
       </td>
       <td className="text-fg-muted">{humanize(t.transaction_type)}</td>
       <td className="cell-right">
-        <span className="num font-medium">{formatNgn(t.amount_ngn)}</span>
-        {t.currency_raw !== 'NGN' && <span className="t-caption num ml-1.5">{t.currency_raw}</span>}
+        <Amount t={t} />
       </td>
       <td>
         <SettlementBadge status={t.settlement_status} />
@@ -92,7 +122,11 @@ const TxRow = memo(function TxRow({
         <MatchBadge status={t.match_status} />
       </td>
       <td className="cell-right num">
-        {t.open_discrepancies > 0 ? <span className="font-medium text-critical-text">{t.open_discrepancies}</span> : <span className="text-fg-subtle">0</span>}
+        {t.open_discrepancies > 0 ? (
+          <span className="font-medium text-critical-text">{t.open_discrepancies}</span>
+        ) : (
+          <span className="text-fg-subtle">0</span>
+        )}
       </td>
       <td className="num text-fg-muted" title={formatDateTime(t.initiated_at)}>
         {formatShortDateTime(t.initiated_at)}
@@ -101,13 +135,46 @@ const TxRow = memo(function TxRow({
   );
 });
 
+/** Narrow screens: two-line rows, reference and amount first. */
+const TxListRow = memo(function TxListRow({ t, open, onOpen }: { t: TransactionSummary; open: boolean; onOpen: (id: string) => void }) {
+  return (
+    <li className={cn('border-b border-line last:border-b-0', open && 'bg-accent-soft')}>
+      <button
+        type="button"
+        data-row-button
+        onClick={() => onOpen(t.id)}
+        className="flex w-full items-start justify-between gap-3 px-4 py-3 text-left"
+      >
+        <span className="min-w-0">
+          <span className="t-mono block truncate text-fg">{t.psp_transaction_ref}</span>
+          <span className="t-caption mt-0.5 flex items-center gap-1.5">
+            <PspIcon name={t.psp_name} className="h-3 w-3 shrink-0" />
+            {pspDisplayName(t.psp_name)} · {humanize(t.transaction_type)} · {formatShortDateTime(t.initiated_at)}
+          </span>
+        </span>
+        <span className="shrink-0 text-right">
+          <Amount t={t} />
+          <span className="t-caption block">
+            {t.match_status === 'matched' ? 'Matched' : 'Unmatched'}
+            {t.settlement_status !== 'settled' && `, ${humanize(t.settlement_status).toLowerCase()}`}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
+});
+
 // ── View ─────────────────────────────────────────────────────────────────────
 
 export function TransactionsView() {
   const [params, setParams] = useUrlState(SCHEMA, URL_OPTIONS);
   const tableRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  useRowKeys(tableRef, searchRef);
+  const isWide = useMediaQuery('(min-width: 768px)');
+  useRowKeys(isWide ? tableRef : listRef, searchRef);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersId = useId();
 
   // The search box updates the URL once typing settles.
   const [draft, setDraft] = useState(params.q ?? '');
@@ -142,6 +209,7 @@ export function TransactionsView() {
   const { data, error, isLoading, isRefreshing, refetch, updatedAt } = useTransactions(filters);
   const rows = data?.transactions ?? [];
   const active = countActive(SCHEMA, params, FILTER_KEYS);
+  const activeFilters = countActive(SCHEMA, params, ['psp', 'type', 'match', 'settlement', 'from', 'to']);
   const rangeInvalid = !!params.from && !!params.to && params.from > params.to;
 
   const filterKey = JSON.stringify(filters);
@@ -162,10 +230,7 @@ export function TransactionsView() {
 
   return (
     <div className="page space-y-6">
-      <PageHeader
-        title="Transactions"
-        description="Canonical transactions in Silver. Open one to trace it from the broker to its match."
-      />
+      <PageHeader title="Transactions" description="Canonical transactions in Silver. Open one to trace it from the broker to its match." />
 
       <div className="panel overflow-hidden">
         <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
@@ -173,7 +238,11 @@ export function TransactionsView() {
             <label htmlFor={searchId} className="sr-only">
               Search by PSP reference or transaction ID
             </label>
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-subtle" strokeWidth={1.75} aria-hidden="true" />
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-subtle"
+              strokeWidth={1.75}
+              aria-hidden="true"
+            />
             <input
               ref={searchRef}
               id={searchId}
@@ -189,32 +258,78 @@ export function TransactionsView() {
               /
             </kbd>
           </div>
-          <FilterSelect label="PSP" anyLabel="Any PSP" value={params.psp} onChange={(psp) => setParams({ psp })} options={PSPS.map((p) => ({ value: p, label: pspDisplayName(p) }))} />
-          <FilterSelect label="Type" anyLabel="Any type" value={params.type} onChange={(type) => setParams({ type })} options={TRANSACTION_TYPES.map((v) => ({ value: v, label: humanize(v) }))} />
-          <FilterSelect
-            label="Match status"
-            anyLabel="Matched or not"
-            value={params.match}
-            onChange={(match) => setParams({ match })}
-            options={[
-              { value: 'matched', label: 'Matched' },
-              { value: 'unmatched', label: 'Unmatched' },
-            ]}
-          />
-          <FilterSelect label="Settlement" anyLabel="Any settlement" value={params.settlement} onChange={(settlement) => setParams({ settlement })} options={SETTLEMENT_STATUSES.map((v) => ({ value: v, label: humanize(v) }))} />
-          <span className="inline-flex items-center gap-1.5">
-            <label htmlFor={fromId} className="sr-only">
-              From date
-            </label>
-            <input id={fromId} type="date" className="input input-sm w-[140px]" value={params.from ?? ''} max={params.to} onChange={(e) => setParams({ from: e.target.value || undefined })} aria-invalid={rangeInvalid} />
-            <span className="t-caption" aria-hidden="true">
-              to
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm md:hidden"
+            aria-expanded={filtersOpen}
+            aria-controls={filtersId}
+            onClick={() => setFiltersOpen((o) => !o)}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
+            Filters{activeFilters ? ` (${activeFilters})` : ''}
+          </button>
+          <div id={filtersId} className={cn('w-full flex-wrap items-center gap-2 md:flex md:w-auto', filtersOpen ? 'flex' : 'hidden')}>
+            <FilterSelect
+              label="PSP"
+              anyLabel="Any PSP"
+              value={params.psp}
+              onChange={(psp) => setParams({ psp })}
+              options={PSPS.map((p) => ({ value: p, label: pspDisplayName(p) }))}
+            />
+            <FilterSelect
+              label="Type"
+              anyLabel="Any type"
+              value={params.type}
+              onChange={(type) => setParams({ type })}
+              options={TRANSACTION_TYPES.map((v) => ({ value: v, label: humanize(v) }))}
+            />
+            <FilterSelect
+              label="Match status"
+              anyLabel="Matched or not"
+              value={params.match}
+              onChange={(match) => setParams({ match })}
+              options={[
+                { value: 'matched', label: 'Matched' },
+                { value: 'unmatched', label: 'Unmatched' },
+              ]}
+            />
+            <FilterSelect
+              label="Settlement"
+              anyLabel="Any settlement"
+              value={params.settlement}
+              onChange={(settlement) => setParams({ settlement })}
+              options={SETTLEMENT_STATUSES.map((v) => ({ value: v, label: humanize(v) }))}
+            />
+            <span className="inline-flex items-center gap-1.5">
+              <label htmlFor={fromId} className="sr-only">
+                From date
+              </label>
+              <input
+                id={fromId}
+                type="date"
+                className="input input-sm w-[140px]"
+                value={params.from ?? ''}
+                max={params.to}
+                onChange={(e) => setParams({ from: e.target.value || undefined })}
+                aria-invalid={rangeInvalid}
+              />
+              <span className="t-caption" aria-hidden="true">
+                to
+              </span>
+              <label htmlFor={toId} className="sr-only">
+                To date
+              </label>
+              <input
+                id={toId}
+                type="date"
+                className="input input-sm w-[140px]"
+                value={params.to ?? ''}
+                min={params.from}
+                onChange={(e) => setParams({ to: e.target.value || undefined })}
+                aria-invalid={rangeInvalid}
+              />
             </span>
-            <label htmlFor={toId} className="sr-only">
-              To date
-            </label>
-            <input id={toId} type="date" className="input input-sm w-[140px]" value={params.to ?? ''} min={params.from} onChange={(e) => setParams({ to: e.target.value || undefined })} aria-invalid={rangeInvalid} />
-          </span>
+          </div>
           {active > 0 && (
             <button
               type="button"
@@ -222,17 +337,27 @@ export function TransactionsView() {
               onClick={() => {
                 window.clearTimeout(searchTimer.current);
                 setDraft('');
-                setParams({ q: undefined, psp: undefined, type: undefined, match: undefined, settlement: undefined, from: undefined, to: undefined });
+                setParams({
+                  q: undefined,
+                  psp: undefined,
+                  type: undefined,
+                  match: undefined,
+                  settlement: undefined,
+                  from: undefined,
+                  to: undefined,
+                });
               }}
             >
               <X className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
-              Clear {active}
+              Clear
             </button>
           )}
         </div>
 
         {rangeInvalid && <p className="notice notice-warn m-3">The start date is after the end date, so nothing can match.</p>}
-        {error && data && <ErrorNotice error={error} what="transactions" onRetry={refetch} retrying={isRefreshing} staleSince={updatedAt} className="m-3" />}
+        {error && data && (
+          <ErrorNotice error={error} what="transactions" onRetry={refetch} retrying={isRefreshing} staleSince={updatedAt} className="m-3" />
+        )}
 
         {error && !data ? (
           <PanelError error={error} what="transactions" onRetry={refetch} retrying={isRefreshing} />
@@ -248,6 +373,18 @@ export function TransactionsView() {
                 : 'Transactions appear here once PSP webhooks have been ingested and normalised.'
             }
           />
+        ) : !isWide ? (
+          <div ref={listRef}>
+            {isLoading ? (
+              <TableSkeletonList />
+            ) : (
+              <ul aria-label="Transactions, newest first">
+                {rows.map((t) => (
+                  <TxListRow key={t.id} t={t} open={params.id === t.id} onOpen={open} />
+                ))}
+              </ul>
+            )}
+          </div>
         ) : (
           <div ref={tableRef} className="table-wrap max-h-[calc(100dvh-280px)] min-h-[320px]">
             <table className={cn('table', isRefreshing && 'opacity-70 transition-opacity')}>
@@ -287,7 +424,12 @@ export function TransactionsView() {
               <label htmlFor={sizeId} className="t-caption">
                 Rows
               </label>
-              <select id={sizeId} className="select select-sm w-auto" value={params.size} onChange={(e) => setParams({ size: Number(e.target.value) })}>
+              <select
+                id={sizeId}
+                className="select select-sm w-auto"
+                value={params.size}
+                onChange={(e) => setParams({ size: Number(e.target.value) })}
+              >
                 {PAGE_SIZES.map((n) => (
                   <option key={n} value={n}>
                     {n}
@@ -295,7 +437,15 @@ export function TransactionsView() {
                 ))}
               </select>
             </span>
-            <Pagination offset={params.offset} pageSize={params.size} shown={rows.length} total={data.total} onChange={(offset) => setParams({ offset })} busy={isRefreshing} noun="transactions" />
+            <Pagination
+              offset={params.offset}
+              pageSize={params.size}
+              shown={rows.length}
+              total={data.total}
+              onChange={(offset) => setParams({ offset })}
+              busy={isRefreshing}
+              noun="transactions"
+            />
           </div>
         )}
       </div>
@@ -321,7 +471,13 @@ function TransactionSheet({ id, onClose }: { id: string | null; onClose: () => v
         onClose();
       }}
       title={t ? <span className="t-mono text-[16px]">{t.psp_transaction_ref}</span> : isLoading ? 'Loading transaction' : 'Transaction'}
-      subtitle={t ? <>{pspDisplayName(t.psp_name)} · {humanize(t.transaction_type)} · <span className="t-mono">{t.psp_event_type}</span></> : undefined}
+      subtitle={
+        t ? (
+          <>
+            {pspDisplayName(t.psp_name)} · {humanize(t.transaction_type)} · <span className="t-mono">{t.psp_event_type}</span>
+          </>
+        ) : undefined
+      }
       headerExtra={
         t ? (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -333,7 +489,12 @@ function TransactionSheet({ id, onClose }: { id: string | null; onClose: () => v
       }
     >
       {error ? (
-        <PanelError error={error} what={error.status === 404 ? 'this transaction (it is not in Silver)' : 'the transaction'} onRetry={error.status === 404 ? undefined : refetch} retrying={isRefreshing} />
+        <PanelError
+          error={error}
+          what={error.status === 404 ? 'this transaction (it is not in Silver)' : 'the transaction'}
+          onRetry={error.status === 404 ? undefined : refetch}
+          retrying={isRefreshing}
+        />
       ) : !data ? (
         <div className="space-y-6 px-6 py-6" aria-busy="true">
           <span role="status" className="sr-only">
@@ -353,7 +514,7 @@ function TransactionSheet({ id, onClose }: { id: string | null; onClose: () => v
             <p className="t-metric mt-1.5 text-[30px]">{formatNgn(data.transaction.amount_ngn)}</p>
             {data.transaction.currency_raw !== 'NGN' && (
               <p className="t-caption num mt-1">
-                {data.transaction.amount_raw} {data.transaction.currency_raw} at {data.transaction.fx_rate_applied ?? '—'} per unit
+                Received as {formatAmountIn(data.transaction.amount_raw, data.transaction.currency_raw)}, converted at {formatNgn(data.transaction.fx_rate_applied)} per {data.transaction.currency_raw}
               </p>
             )}
           </div>
@@ -391,7 +552,10 @@ function TransactionOverview({ detail }: { detail: TransactionDetailResponse }) 
               Inspect pair
             </Link>
           </div>
-          <Link href={`/transactions?id=${pair.counterpart.id}`} className="block rounded-[10px] bg-inset px-4 py-3.5 transition-colors hover:bg-panel-hover">
+          <Link
+            href={`/transactions?id=${pair.counterpart.id}`}
+            className="block rounded-[10px] bg-inset px-4 py-3.5 transition-colors hover:bg-panel-hover"
+          >
             <span className="flex items-center justify-between gap-3">
               <span className="flex min-w-0 items-center gap-2">
                 <PspIcon name={pair.counterpart.psp_name} className="h-4 w-4 shrink-0" />
@@ -400,12 +564,15 @@ function TransactionOverview({ detail }: { detail: TransactionDetailResponse }) 
               <span className="num shrink-0 font-medium text-fg">{formatNgn(pair.counterpart.amount_ngn)}</span>
             </span>
             <span className="t-caption mt-1 block">
-              {humanize(pair.counterpart.transaction_type)} · {formatDateTime(pair.counterpart.initiated_at)} · {strategyLabel(pair.match_strategy)}, {formatScore(pair.confidence_score)} confidence
+              {humanize(pair.counterpart.transaction_type)} · {formatDateTime(pair.counterpart.initiated_at)} ·{' '}
+              {strategyLabel(pair.match_strategy)}, {formatScore(pair.confidence_score)} confidence
             </span>
           </Link>
         </section>
       ) : (
-        <p className="rounded-[10px] bg-inset px-4 py-3 text-[13px] text-fg-muted">Not matched. The engine has not paired this transaction with a counterpart.</p>
+        <p className="rounded-[10px] bg-inset px-4 py-3 text-[13px] text-fg-muted">
+          Not matched. The engine has not paired this transaction with a counterpart.
+        </p>
       )}
 
       {discrepancies.length > 0 && (

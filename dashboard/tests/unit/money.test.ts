@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatAmountIn,
   formatKobo,
   formatKoboCompact,
   formatNgn,
@@ -71,6 +72,16 @@ describe('formatting', () => {
     for (const s of ['0.00', '1.05', '-12.50', '1234567.89']) {
       expect(koboToDecimalString(toKobo(s) as bigint)).toBe(s);
     }
+  });
+});
+
+describe('formatAmountIn', () => {
+  it('uses the currency’s own sign, or its code when there is none', () => {
+    expect(formatAmountIn('912.34', 'USD')).toBe('$912.34');
+    expect(formatAmountIn('1000', 'eur')).toBe('€1,000.00');
+    expect(formatAmountIn('25000.5', 'NGN')).toBe('₦25,000.50');
+    expect(formatAmountIn('1000', 'KES')).toBe('1,000.00 KES');
+    expect(formatAmountIn(null, 'USD')).toBe('—');
   });
 });
 
