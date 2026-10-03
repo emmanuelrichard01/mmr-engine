@@ -56,6 +56,68 @@ export function koboRatio(a: bigint, b: bigint): number {
   return Number((a * BigInt(10_000)) / b) / 10_000;
 }
 
+/** Parts of a formatted amount, so the currency sign can be typeset apart from the figure. */
+export interface MoneyParts {
+  sign: '' | '−';
+  symbol: '₦';
+  whole: string;
+  fraction: string;
+}
+
+export function koboParts(kobo: bigint): MoneyParts {
+  const negative = kobo < ZERO;
+  const abs = negative ? -kobo : kobo;
+  return {
+    sign: negative ? '−' : '',
+    symbol: '₦',
+    whole: groupThousands((abs / HUNDRED).toString()),
+    fraction: (abs % HUNDRED).toString().padStart(2, '0'),
+  };
+}
+
+const COMPACT_STEPS: [bigint, string][] = [
+  [BigInt(1_000_000_000_000), 'T'],
+  [BigInt(1_000_000_000), 'B'],
+  [BigInt(1_000_000), 'M'],
+  [BigInt(1_000), 'K'],
+];
+
+/**
+ * Compact amount for axes and dense labels, e.g. "₦1.2M". Integer arithmetic
+ * only; the single decimal is truncated, never rounded up past the true value.
+ */
+export function formatKoboCompact(kobo: bigint): string {
+  const negative = kobo < ZERO;
+  const naira = (negative ? -kobo : kobo) / HUNDRED;
+  const sign = negative ? '−' : '';
+  for (const [step, suffix] of COMPACT_STEPS) {
+    if (naira >= step) {
+      const tenths = (naira * BigInt(10)) / step;
+      const whole = tenths / BigInt(10);
+      const decimal = tenths % BigInt(10);
+      return `${sign}₦${whole.toString()}${decimal === ZERO || whole >= BigInt(100) ? '' : `.${decimal.toString()}`}${suffix}`;
+    }
+  }
+  return `${sign}₦${naira.toString()}`;
+}
+
+/**
+ * The amount at fraction `t` (0..1) of the way from `from` to `to`, for
+ * animated counters. Display-only, and still integer arithmetic: `t` is
+ * quantised to 1/10,000 before it touches the amount.
+ */
+export function interpolateKobo(from: bigint, to: bigint, t: number): bigint {
+  if (t <= 0) return from;
+  if (t >= 1) return to;
+  const steps = BigInt(Math.round(t * 10_000));
+  return from + ((to - from) * steps) / BigInt(10_000);
+}
+
+/** Largest of a list of amounts (zero for an empty list). */
+export function maxKobo(values: bigint[]): bigint {
+  return values.reduce((m, v) => (v > m ? v : m), ZERO);
+}
+
 /** Serialise kobo back to a plain decimal string ("1234.50"). */
 export function koboToDecimalString(kobo: bigint): DecimalString {
   const negative = kobo < ZERO;
