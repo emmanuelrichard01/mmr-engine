@@ -1,18 +1,40 @@
 # MMR — Money Movement Reconciliation Engine
 
+[![CI](https://github.com/emmanuelrichard01/mmr-engine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/emmanuelrichard01/mmr-engine/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+![mypy strict](https://img.shields.io/badge/mypy-strict-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **PSP-to-ledger reconciliation reference implementation for Nigerian payments.**
 
-> **Status: frozen reference implementation (v1.0.0).** Built and tested on synthetic data only;
-> not deployed to production. The follow-up product work is described in
-> [What I'd do next](#what-id-do-next).
+**In plain terms:** a business that takes payments through Paystack and Flutterwave gets a separate
+record of every payment from each one, and the records don't always agree. Settlements go missing,
+amounts differ, and the same event can arrive twice. Someone in finance then finds the gaps by hand in
+a spreadsheet. MMR does that work automatically: it collects every event, stores it once, pairs the
+records that describe the same money, and puts whatever doesn't add up into a review inbox, with the
+evidence attached.
 
-MMR ingests Paystack and Flutterwave events, normalises them into one canonical ledger, matches
-money movements across providers, and raises the discrepancies a finance team would otherwise find
-by hand in a spreadsheet: settlements that never arrived, amounts that don't agree, FX gaps.
+> **Project status: complete (v1.0.0).** MMR is maintained as a reference implementation. It gets no
+> further feature work, only correctness, security or documentation fixes. It was built and tested on
+> synthetic data and has never been deployed with live merchant data. See
+> [Honest scope & limitations](#honest-scope--limitations).
 
-It is a study in the boring parts of payments engineering that decide whether numbers can be trusted:
-idempotency, offset management, exact money arithmetic, one-to-one matching enforced by the database,
-append-only audit trails and least-privilege data access.
+Under the hood it's a study in the unglamorous parts of payments engineering that decide whether the
+numbers can be trusted: idempotency, offset management, exact money arithmetic, one-to-one matching
+enforced by the database, append-only audit trails and least-privilege data access.
+
+![Operations console: overview page](dashboard/docs/screenshots/overview-light-desktop.png)
+
+<sub>The operations console on 14 days of synthetic data. More screenshots (light and dark, desktop
+and mobile) are in [dashboard/docs/screenshots](dashboard/docs/screenshots/).</sub>
+
+| Read next | For |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Processes, data layers, every guarantee with the test that proves it, failure modes, security model |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Running, observing and troubleshooting the stack; dashboard pages |
+| [docs/adr/0001-pii-tokenization.md](docs/adr/0001-pii-tokenization.md) | Why names are matched on keyed tokens, not masked strings |
+| [dashboard/DESIGN.md](dashboard/DESIGN.md) | The console's design system |
+| [CHANGELOG.md](CHANGELOG.md) | What v1.0.0 fixed and why |
 
 ---
 
@@ -77,6 +99,9 @@ append-only audit trails and least-privilege data access.
   blocks it. All three are tested.
 - **Fail-closed configuration.** `ENVIRONMENT` defaults to `production`. Empty secrets are rejected at
   boot. API auth can be disabled only in development.
+
+Each of these guarantees is listed next to the test that proves it in
+[ARCHITECTURE.md → Guarantees](docs/ARCHITECTURE.md#guarantees-and-where-they-are-enforced).
 
 ## Running it
 
@@ -173,6 +198,12 @@ verified ground truth instead:
 3. **Then widen back toward MMR.** A batch-settlement solver, accounting sync and tax evidence, if the
    wedge proves demand.
 
+## Contributing and security
+
+MMR is complete, so it doesn't take feature pull requests. Bug reports are welcome as issues,
+especially anything that makes a claim in this README or in ARCHITECTURE.md untrue. To report a
+vulnerability privately, see [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 Emmanuel Richard
