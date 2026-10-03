@@ -1,11 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, RefreshCw } from 'lucide-react';
+import { Download, FileText, Info, RotateCw } from 'lucide-react';
 import { ExperimentalBadge } from '@/components/badges';
 import { EmptyState } from '@/components/empty-state';
-import { ErrorNotice } from '@/components/notices';
-import { PageHeader, Skeleton } from '@/components/page-header';
+import { ErrorNotice, PanelError } from '@/components/notices';
+import { PageHeader } from '@/components/page-header';
+import { Pagination } from '@/components/pagination';
+import { TableRowsSkeleton } from '@/components/table-skeleton';
 import type { DailyReport } from '@/lib/api';
 import { useDailyReports } from '@/lib/hooks';
 import { formatNgn } from '@/lib/money';
@@ -18,6 +20,7 @@ const CSV_COLUMNS: (keyof DailyReport)[] = [
   'total_transactions',
   'total_volume_ngn',
   'match_rate_pct',
+  'cross_border_count',
   'suspicious_flags',
   'open_discrepancies',
   'total_exposure_ngn',
@@ -52,125 +55,101 @@ export function ReportsView() {
   const rows = data?.reports ?? [];
 
   return (
-    <div className="space-y-5">
+    <div className="page space-y-6">
       <PageHeader
         title="Daily return"
         badge={<ExperimentalBadge />}
-        description="CBN-style daily return (experimental — not a compliance product)."
+        description="Each reconciled day, aggregated into a return shaped like a CBN daily report."
         actions={
           <>
             <button type="button" onClick={refetch} disabled={isRefreshing} className="btn btn-secondary btn-sm">
-              <RefreshCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin')} aria-hidden="true" />
-              {isRefreshing ? 'Refreshing…' : 'Refresh'}
+              <RotateCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin')} strokeWidth={1.75} aria-hidden="true" />
+              {isRefreshing ? 'Refreshing' : 'Refresh'}
             </button>
-            <button
-              type="button"
-              onClick={() => downloadCsv(rows, offset)}
-              disabled={rows.length === 0}
-              className="btn btn-primary btn-sm"
-            >
-              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+            <button type="button" onClick={() => downloadCsv(rows, offset)} disabled={rows.length === 0} className="btn btn-primary btn-sm">
+              <Download className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
               Download CSV
             </button>
           </>
         }
       />
 
-      <div className="notice notice-info" role="note">
-        <p>
-          The engine aggregates each reconciled day into a return shaped like a regulated institution’s daily report. It
-          is an experimental module of a reference implementation: nothing here is filed with, or reviewed by, the
-          Central Bank of Nigeria, and the format has not been validated against current CBN requirements.
+      <div className="notice" role="note">
+        <Info className="mt-0.5 h-4 w-4 shrink-0 text-fg-subtle" strokeWidth={1.75} aria-hidden="true" />
+        <p className="max-w-[90ch]">
+          An experimental module of a reference implementation. Nothing here is filed with, or reviewed by, the Central Bank of Nigeria, and the format has not been validated against current CBN requirements.
         </p>
       </div>
 
-      {error && (
-        <ErrorNotice
-          error={error}
-          what="daily returns"
-          onRetry={refetch}
-          retrying={isRefreshing}
-          staleSince={data ? updatedAt : null}
-        />
-      )}
+      {error && data && <ErrorNotice error={error} what="daily returns" onRetry={refetch} retrying={isRefreshing} staleSince={updatedAt} />}
 
-      <div className="card card-flush">
-        {isLoading ? (
-          <div className="space-y-3 p-5">
-            {Array.from({ length: 6 }, (_, i) => (
-              <Skeleton key={i} className="h-9 w-full" />
-            ))}
-          </div>
-        ) : !data ? (
-          <EmptyState title="No data" description="Daily returns could not be loaded." />
-        ) : rows.length === 0 ? (
+      <div className="panel overflow-hidden">
+        {error && !data ? (
+          <PanelError error={error} what="daily returns" onRetry={refetch} retrying={isRefreshing} />
+        ) : !isLoading && rows.length === 0 ? (
           <EmptyState
-            title={offset === 0 ? 'No daily returns generated yet' : 'No more returns'}
-            description={offset === 0 ? 'Returns appear here after the engine’s daily report job has run.' : undefined}
+            icon={<FileText className="h-5 w-5" strokeWidth={1.5} />}
+            title={offset === 0 ? 'No daily returns yet' : 'No older returns'}
+            description={offset === 0 ? 'The scheduler generates a return at 02:00 WAT for the previous day.' : undefined}
           />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="data-table">
+          <div className="table-wrap">
+            <table className="table">
               <caption className="sr-only">Daily returns, newest first</caption>
               <thead>
                 <tr>
                   <th scope="col">Report date</th>
-                  <th scope="col" className="text-right">Transactions</th>
-                  <th scope="col" className="text-right">Volume</th>
-                  <th scope="col" className="text-right">Match rate</th>
-                  <th scope="col" className="text-right">Open discrepancies</th>
-                  <th scope="col" className="text-right">Exposure</th>
-                  <th scope="col" className="text-right">Suspicious flags</th>
+                  <th scope="col" className="cell-right">
+                    Transactions
+                  </th>
+                  <th scope="col" className="cell-right">
+                    Volume
+                  </th>
+                  <th scope="col" className="cell-right">
+                    Match rate
+                  </th>
+                  <th scope="col" className="cell-right">
+                    Open
+                  </th>
+                  <th scope="col" className="cell-right">
+                    Exposure
+                  </th>
+                  <th scope="col" className="cell-right">
+                    Flags
+                  </th>
                   <th scope="col">Status</th>
-                  <th scope="col">Generated</th>
+                  <th scope="col">Generated (WAT)</th>
                 </tr>
               </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.report_date}>
-                    <th scope="row" className="font-medium">
-                      {formatCalendarDate(r.report_date)}
-                    </th>
-                    <td className="text-right tabular-nums">{formatCount(r.total_transactions)}</td>
-                    <td className="text-financial text-right">{formatNgn(r.total_volume_ngn)}</td>
-                    <td className="text-right tabular-nums">{formatPercent(r.match_rate_pct, 2)}</td>
-                    <td className="text-right tabular-nums">{formatCount(r.open_discrepancies)}</td>
-                    <td className="text-financial text-right">{formatNgn(r.total_exposure_ngn)}</td>
-                    <td className="text-right tabular-nums">{formatCount(r.suspicious_flags)}</td>
-                    <td>
-                      <span className="badge badge-neutral">{humanize(r.status)}</span>
-                    </td>
-                    <td className="whitespace-nowrap text-[var(--color-surface-600)]">{formatDateTime(r.generated_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
+              {isLoading ? (
+                <TableRowsSkeleton columns={9} rows={10} />
+              ) : (
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.report_date}>
+                      <th scope="row" className="!font-medium">
+                        {formatCalendarDate(r.report_date)}
+                      </th>
+                      <td className="cell-right num">{formatCount(r.total_transactions)}</td>
+                      <td className="cell-right num">{formatNgn(r.total_volume_ngn)}</td>
+                      <td className="cell-right num">{formatPercent(r.match_rate_pct, 2)}</td>
+                      <td className="cell-right num">{formatCount(r.open_discrepancies)}</td>
+                      <td className="cell-right num">{formatNgn(r.total_exposure_ngn)}</td>
+                      <td className="cell-right num">{r.suspicious_flags > 0 ? <span className="font-medium text-high-text">{r.suspicious_flags}</span> : <span className="text-fg-subtle">0</span>}</td>
+                      <td>
+                        <span className={cn('badge', r.status === 'draft' ? 'badge-outline' : 'badge-positive')}>{humanize(r.status)}</span>
+                      </td>
+                      <td className="num text-fg-muted">{formatDateTime(r.generated_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              )}
             </table>
           </div>
         )}
-
-        {data && (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-surface-200)] px-5 py-3">
-            <p className="text-caption">
-              {rows.length === 0 ? 'No rows' : `Rows ${offset + 1}–${offset + rows.length}, newest first`}
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={offset === 0 || isRefreshing}
-                onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
-              >
-                <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" /> Newer
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={rows.length < PAGE_SIZE || isRefreshing}
-                onClick={() => setOffset((o) => o + PAGE_SIZE)}
-              >
-                Older <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-            </div>
+        {data && (rows.length > 0 || offset > 0) && (
+          <div className="border-t border-line">
+            <Pagination offset={offset} pageSize={PAGE_SIZE} shown={rows.length} onChange={setOffset} busy={isRefreshing} noun="returns" />
           </div>
         )}
       </div>
