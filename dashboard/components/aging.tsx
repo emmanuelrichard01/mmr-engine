@@ -42,7 +42,7 @@ export function AgingBar({ buckets, className, label }: { buckets: AgingBucketRo
             <motion.span
               key={p.bucket}
               className={cn('h-full first:rounded-l-full last:rounded-r-full', BUCKET_FILL[p.bucket])}
-              style={{ flexGrow: Math.max(p.share, 0.012), flexBasis: 0, transformOrigin: 'left center' }}
+              style={{ flexGrow: Math.max(p.share, 0.012), flexBasis: 0, minWidth: 4, transformOrigin: 'left center' }}
               initial={reduce ? false : { scaleX: 0 }}
               animate={{ scaleX: 1 }}
               transition={{ duration: DURATION.reveal, ease: EASE_OUT, delay: i * 0.05 }}

@@ -255,11 +255,11 @@ function Composer({
                 onChange={(e) => setNote(e.target.value)}
                 onBlur={() => note && setTouched(true)}
                 onKeyDown={onKeyDown}
-                rows={3}
+                rows={2}
                 aria-invalid={showError}
                 aria-describedby={`${hintId}${showError ? ` ${errorId}` : ''}`}
                 placeholder={outcome === 'resolved' ? 'What was found and how it was settled, e.g. the PSP payout reference' : 'Why this is not a real discrepancy'}
-                className="textarea"
+                className="textarea !min-h-[68px]"
               />
               <div className="flex items-center justify-between gap-3">
                 <p id={hintId} className="t-caption num">

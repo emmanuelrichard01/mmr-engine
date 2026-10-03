@@ -59,13 +59,17 @@ function FlowGlance({ flow, active, onSelect, now }: { flow: (typeof KNOWN_FLOWS
         )}
       </span>
       {!isLoading && finished.length > 0 && (
-        <span className="flex items-center gap-[3px]" role="img" aria-label={`${ok} of the last ${finished.length} finished runs succeeded`}>
-          {finished
-            .slice(0, 20)
-            .reverse()
-            .map((r) => (
-              <span key={r.id} className={cn('h-3 w-1.5 rounded-[2px]', r.status === 'completed' ? 'bg-positive/70' : 'bg-critical')} />
-            ))}
+        // A fixed run of 20 slots, newest on the right; slots without a run stay empty.
+        <span className="flex w-full items-center justify-end gap-[3px]" role="img" aria-label={`${ok} of the last ${finished.length} finished runs succeeded`}>
+          {Array.from({ length: 20 }, (_, i) => {
+            const r = finished.slice(0, 20).reverse()[i - (20 - Math.min(20, finished.length))];
+            return (
+              <span
+                key={i}
+                className={cn('h-3 w-1.5 rounded-[2px]', !r ? 'bg-inset' : r.status === 'completed' ? 'bg-positive/70' : 'bg-critical')}
+              />
+            );
+          })}
         </span>
       )}
     </button>
@@ -132,7 +136,9 @@ export function ActivityView() {
               <thead>
                 <tr>
                   <th scope="col">Status</th>
-                  <th scope="col">Flow</th>
+                  <th scope="col" className="!pl-[calc(var(--cell-x)+20px)]">
+                    Flow
+                  </th>
                   <th scope="col">Started (WAT)</th>
                   <th scope="col" className="cell-right">
                     Duration

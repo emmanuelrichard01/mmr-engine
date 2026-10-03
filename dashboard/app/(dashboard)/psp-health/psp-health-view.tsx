@@ -34,30 +34,49 @@ const FRESH_BADGE: Record<Freshness, string> = { live: 'badge-positive', quiet: 
  * Where the last event sits on a log time scale from 1 minute to 24 hours,
  * against the live / quiet / stale thresholds.
  */
-function FreshnessScale({ minutes, label }: { minutes: number | null; label: string }) {
+const MARKER_FILL: Record<Freshness, string> = { live: 'bg-positive', quiet: 'bg-medium', stale: 'bg-critical', unknown: 'bg-fg-faint' };
+
+function FreshnessScale({ minutes, label, fresh }: { minutes: number | null; label: string; fresh: Freshness }) {
   const pos = (m: number) => Math.min(1, Math.max(0, Math.log(Math.max(1, m)) / Math.log(24 * 60)));
   const marker = minutes === null ? null : pos(minutes);
+  const ticks: [string, number][] = [
+    ['1m', 0],
+    ['15m', pos(15)],
+    ['2h', pos(120)],
+    ['24h', 1],
+  ];
   return (
     <div>
-      <div className="relative" role="img" aria-label={label}>
-        <div className="flex h-1.5 gap-[2px] overflow-hidden rounded-full">
-          <span className="h-full bg-positive/70" style={{ width: `${pos(15) * 100}%` }} />
-          <span className="h-full bg-medium/70" style={{ width: `${(pos(120) - pos(15)) * 100}%` }} />
-          <span className="h-full flex-1 bg-critical/60" />
-        </div>
+      <div className="relative h-3.5" role="img" aria-label={label}>
+        <span className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-inset" aria-hidden="true" />
         {marker !== null && (
           <span
-            className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-panel bg-fg shadow-sm"
+            className={cn('absolute left-0 top-1/2 h-1 -translate-y-1/2 rounded-full', MARKER_FILL[fresh])}
+            style={{ width: `${marker * 100}%` }}
+            aria-hidden="true"
+          />
+        )}
+        {ticks.slice(1, 3).map(([t, x]) => (
+          <span key={t} className="absolute top-1/2 h-2.5 w-px -translate-y-1/2 bg-line-strong" style={{ left: `${x * 100}%` }} aria-hidden="true" />
+        ))}
+        {marker !== null && (
+          <span
+            className={cn('absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-panel', MARKER_FILL[fresh])}
             style={{ left: `${marker * 100}%` }}
             aria-hidden="true"
           />
         )}
       </div>
-      <div className="t-caption mt-2 flex justify-between" aria-hidden="true">
-        <span>1m</span>
-        <span>15m</span>
-        <span>2h</span>
-        <span>24h</span>
+      <div className="t-caption relative mt-1.5 h-4" aria-hidden="true">
+        {ticks.map(([t, x], i) => (
+          <span
+            key={t}
+            className="absolute top-0"
+            style={{ left: `${x * 100}%`, transform: i === 0 ? 'none' : i === ticks.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)' }}
+          >
+            {t}
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -97,21 +116,21 @@ function PspCard({ p, aging, now }: { p: PspHealth; aging: AgingBucketRow[] | nu
       </div>
 
       <div className="px-6 pt-5">
-        <FreshnessScale minutes={mins} label={`Event freshness: last event ${lastLabel}. Live under 15 minutes, quiet under 2 hours, stale after.`} />
+        <FreshnessScale fresh={fresh} minutes={mins} label={`Event freshness: last event ${lastLabel}. Live under 15 minutes, quiet under 2 hours, stale after.`} />
       </div>
 
-      <dl className="mt-6 grid grid-cols-3 border-t border-line">
+      <dl className="mt-6 grid grid-cols-1 divide-y divide-line border-t border-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
         <div className="px-6 py-4">
           <dt className="t-caption">Match rate, 7 days</dt>
           <dd className="num mt-1 text-[15px] font-semibold text-fg">{formatPercent(p.match_rate_pct_7d)}</dd>
         </div>
-        <div className="border-l border-line px-6 py-4">
+        <div className="px-6 py-4">
           <dt className="t-caption">Open</dt>
           <dd className="num mt-1 text-[15px] font-semibold text-fg">{formatCount(p.open_discrepancies)}</dd>
         </div>
-        <div className="border-l border-line px-6 py-4">
+        <div className="px-6 py-4">
           <dt className="t-caption">Open exposure</dt>
-          <dd className="num mt-1 truncate text-[15px] font-semibold text-fg" title={formatNgn(p.open_exposure_ngn)}>
+          <dd className="num mt-1 text-[15px] font-semibold text-fg">
             {formatNgn(p.open_exposure_ngn)}
           </dd>
         </div>

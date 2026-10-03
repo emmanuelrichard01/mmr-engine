@@ -3,7 +3,7 @@
 import { memo, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { CheckCircle2, Inbox as InboxIcon, Keyboard, RotateCw, X } from 'lucide-react';
-import { SeverityPip, STATUS_LABEL, StatusBadge } from '@/components/badges';
+import { SeverityLabel, SeverityPip, STATUS_LABEL, StatusBadge } from '@/components/badges';
 import { Dialog } from '@/components/dialog';
 import { EmptyState } from '@/components/empty-state';
 import { rowReveal } from '@/components/motion-primitives';
@@ -130,7 +130,8 @@ const Row = memo(function Row({
               {d.saving && <span className="sr-only">saving</span>}
             </span>
             <span className="mt-0.5 flex items-center gap-1.5 text-[12.5px] text-fg-subtle">
-              <PspIcon name={d.psp_name} className="h-3 w-3 shrink-0" />
+              <SeverityLabel severity={d.severity} />
+              <PspIcon name={d.psp_name} className="ml-0.5 h-3 w-3 shrink-0" />
               <span className="sr-only">{pspDisplayName(d.psp_name)}</span>
               <span className="t-mono truncate">{d.psp_transaction_ref ?? d.transaction_id}</span>
             </span>
@@ -395,7 +396,11 @@ export function InboxView() {
       <div className="border-b border-line px-[var(--page-x)] pt-7">
         <PageHeader
           title="Inbox"
-          description="What the engine could not reconcile. J and K move, X selects, E resolves."
+          description={
+            <>
+              What the engine could not reconcile.<span className="max-lg:hidden"> J and K move, X selects, E resolves.</span>
+            </>
+          }
           actions={
             <>
               <button type="button" onClick={refetch} disabled={isRefreshing} className="btn btn-secondary btn-sm">
@@ -464,6 +469,7 @@ export function InboxView() {
             </select>
             {activeFilters > 0 && (
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => setParams({ severity: undefined, psp: undefined, id: undefined })}>
+                <X className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
                 Clear
               </button>
             )}

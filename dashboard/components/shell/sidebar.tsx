@@ -30,8 +30,9 @@ function OpenCount() {
   const n = data.by_psp_and_type.reduce((sum, e) => sum + e.open_count, 0);
   if (n === 0) return null;
   return (
-    <span className="num ml-auto text-[12px] font-medium text-fg-subtle" aria-label={`${n} open`}>
+    <span className="num ml-auto text-[12px] font-medium text-fg-subtle" title={`${n} unresolved: open, under review or escalated`}>
       {n.toLocaleString('en-NG')}
+      <span className="sr-only"> unresolved</span>
     </span>
   );
 }

@@ -274,7 +274,7 @@ function PaletteBody({ onClose, onOpenShortcuts }: { onClose: () => void; onOpen
                     onClick={() => c.run()}
                     className={cn(
                       'flex min-h-10 cursor-pointer items-center gap-3 rounded-[8px] px-2.5 py-2 text-[13.5px]',
-                      selected ? 'bg-panel-hover text-fg' : 'text-fg-muted',
+                      selected ? 'bg-accent-soft text-fg' : 'text-fg-muted',
                     )}
                   >
                     <Icon className={cn('h-4 w-4 shrink-0', selected ? 'text-fg' : 'text-fg-subtle')} strokeWidth={1.75} aria-hidden="true" />

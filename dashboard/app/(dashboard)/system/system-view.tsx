@@ -138,7 +138,7 @@ export function SystemView() {
         <div className="px-6 pt-5">
           <SectionHeader id="config-heading" title="How this dashboard is wired" description="Set through environment variables; nothing here is editable from the browser." />
         </div>
-        <dl className="dl-rows px-6 pb-3 pt-3 [&>div]:py-3.5">
+        <dl className="dl-rows px-6 pb-3 pt-3 [&>div]:py-3.5 sm:[&>div]:grid-cols-[200px_1fr]">
           <div>
             <dt>API access</dt>
             <dd className="leading-relaxed">

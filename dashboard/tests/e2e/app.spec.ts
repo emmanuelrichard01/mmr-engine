@@ -136,8 +136,8 @@ test.describe('inbox triage', () => {
     await expect(note).toBeFocused();
     await note.fill('Found in the next payout batch, reference checked.');
     await page.keyboard.press('Control+Enter');
-    // The demo engine takes ~450ms to answer; the row is gone before that.
-    await expect(rows(page).filter({ hasText: ref })).toHaveCount(0, { timeout: 300 });
+    // The demo engine takes ~800ms to answer; the row is gone well before that.
+    await expect(rows(page).filter({ hasText: ref })).toHaveCount(0, { timeout: 500 });
     await expect(page.getByRole('status').filter({ hasText: `Resolved: ${ref}` })).toBeVisible();
     await expect(rows(page)).toHaveCount(before - 1);
 
@@ -151,7 +151,7 @@ test.describe('inbox triage', () => {
     await page.keyboard.press('Shift+E');
     await page.getByLabel('Resolution note').fill('Not a real break [simulate-failure]');
     await page.getByRole('button', { name: /Mark false positive/ }).click();
-    await expect(rows(page).filter({ hasText: ref })).toHaveCount(0, { timeout: 300 });
+    await expect(rows(page).filter({ hasText: ref })).toHaveCount(0, { timeout: 500 });
     await expect(page.getByRole('alert').filter({ hasText: `Couldn’t close ${ref}` })).toBeVisible();
     await expect(rows(page).filter({ hasText: ref })).toHaveCount(1);
   });
@@ -218,7 +218,7 @@ test.describe('explorers', () => {
     await expect(sheet.getByText('Leg A')).toBeVisible();
     await expect(sheet.getByText('Leg B')).toBeVisible();
     await expect(sheet.getByRole('table')).toContainText('Amount');
-    await expect(sheet.getByRole('table')).toContainText('Confidence (threshold 0.75)');
+    await expect(sheet.getByRole('table')).toContainText('Confidence (threshold 75%)');
   });
 });
 

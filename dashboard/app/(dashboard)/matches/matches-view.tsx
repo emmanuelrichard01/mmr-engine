@@ -3,7 +3,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { motion, useReducedMotion } from 'motion/react';
-import { ArrowRight, Link2 } from 'lucide-react';
+import { ArrowRight, Link2, X } from 'lucide-react';
 import { PairStatusBadge, StatusBadge } from '@/components/badges';
 import { ConfidenceEvidence } from '@/components/confidence';
 import { CopyButton } from '@/components/copy-button';
@@ -54,10 +54,20 @@ const PairRow = memo(function PairRow({ p, index, open, animateIn, onOpen }: { p
       </td>
       <td className="text-fg-muted">{strategyLabel(p.match_strategy)}</td>
       <td className="cell-right num">
-        <span className={cn('font-medium', score !== null && score < 0.85 ? 'text-high-text' : 'text-fg')}>{formatScore(p.confidence_score)}</span>
+        <span className="font-medium text-fg">{score === null ? '—' : formatScore(score)}</span>
       </td>
       <td className="cell-right num font-medium">{formatNgn(p.amount_a_ngn)}</td>
-      <td className="cell-right num">{delta && delta !== BigInt(0) ? <span className="text-critical-text">{formatNgn(p.amount_delta_ngn)}</span> : <span className="text-fg-subtle">{formatNgn('0')}</span>}</td>
+      <td className="cell-right num">
+        {!delta || delta === BigInt(0) ? (
+          <span className="text-fg-subtle">None</span>
+        ) : p.status === 'discrepancy' ? (
+          <span className="font-medium text-critical-text">{formatNgn(p.amount_delta_ngn)}</span>
+        ) : (
+          <span className="text-fg-muted" title="Within the engine's amount tolerance; no discrepancy raised">
+            {formatNgn(p.amount_delta_ngn)}
+          </span>
+        )}
+      </td>
       <td>
         <PairStatusBadge status={p.status} />
       </td>
@@ -96,6 +106,7 @@ export function MatchesView() {
           <FilterSelect label="PSP" anyLabel="Either PSP" value={params.psp} onChange={(psp) => setParams({ psp })} options={PSPS.map((p) => ({ value: p, label: pspDisplayName(p) }))} />
           {active > 0 && (
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => setParams({ status: undefined, psp: undefined })}>
+              <X className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
               Clear
             </button>
           )}

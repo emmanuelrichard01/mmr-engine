@@ -1171,6 +1171,12 @@
       0 1px 2px rgb(15 15 18 / 0.05),
       0 0 0 1px var(--color-line);
   }
+
+  /* On the near-black sidebar the panel step is too small to read as selection. */
+  [data-theme='dark'] .nav-active {
+    background: #1e1e24;
+    box-shadow: 0 0 0 1px #2c2c34;
+  }
 }
 
 @utility scrollbar-none {

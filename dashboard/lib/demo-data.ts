@@ -530,7 +530,7 @@ function closeOne(d: Disc, note: string, outcome: ResolveOutcome) {
 }
 
 export async function resolve(id: string, note: string, outcome: ResolveOutcome): Promise<ResolveResponse> {
-  await latency(450);
+  await latency(800);
   if (note.includes(SIMULATE_FAILURE_MARKER)) throw new ApiError(503, 'Simulated failure (demo mode)');
   if (note.trim().length < 10) throw new ApiError(422, 'String should have at least 10 characters');
   const d = discs.find((x) => x.id === id);
@@ -541,7 +541,7 @@ export async function resolve(id: string, note: string, outcome: ResolveOutcome)
 }
 
 export async function bulkResolve(ids: string[], note: string, outcome: ResolveOutcome): Promise<BulkResolveResponse> {
-  await latency(600);
+  await latency(900);
   if (note.includes(SIMULATE_FAILURE_MARKER)) throw new ApiError(503, 'Simulated failure (demo mode)');
   if (ids.length < 1 || ids.length > MAX_BULK_RESOLVE) throw new ApiError(422, `Between 1 and ${MAX_BULK_RESOLVE} ids`);
   const out: BulkResolveResponse = { resolved: [], skipped: [] };

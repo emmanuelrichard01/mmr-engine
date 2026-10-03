@@ -21,6 +21,22 @@ export function SeverityPip({ severity, className }: { severity: Severity | null
   return <span aria-hidden="true" className={cn('pip', severity ? `pip-${severity}` : 'pip-none', className)} />;
 }
 
+const SEVERITY_TEXT: Record<Severity, string> = {
+  critical: 'text-critical-text',
+  high: 'text-high-text',
+  medium: 'text-medium-text',
+  low: 'text-fg-subtle',
+};
+
+/** Compact severity word for dense rows, so severity never relies on the pip's colour alone. */
+export function SeverityLabel({ severity, className }: { severity: Severity | null; className?: string }) {
+  return (
+    <span className={cn('shrink-0 text-[12px] font-medium', severity ? SEVERITY_TEXT[severity] : 'text-fg-subtle', className)}>
+      {severity ? SEVERITY_LABEL[severity] : 'Unclassified'}
+    </span>
+  );
+}
+
 export function SeverityBadge({ severity, className }: { severity: Severity | null; className?: string }) {
   if (!severity) {
     return (
@@ -63,7 +79,8 @@ export function StatusBadge({ status, className }: { status: DiscrepancyStatus |
 }
 
 const PAIR_STATUS_CLASS: Record<string, string> = {
-  matched: 'badge-positive',
+  // Only states that need attention carry colour.
+  matched: '',
   discrepancy: 'badge-high',
   under_review: 'badge-accent',
   resolved: 'badge-positive',
@@ -75,7 +92,7 @@ export function PairStatusBadge({ status, className }: { status: string; classNa
 }
 
 const SETTLEMENT_CLASS: Record<string, string> = {
-  settled: 'badge-positive',
+  settled: '',
   pending: 'badge-medium',
   failed: 'badge-critical',
   reversed: '',
@@ -102,6 +119,15 @@ const RUN_CLASS: Record<string, string> = {
 };
 
 export function RunStatusBadge({ status, className }: { status: string; className?: string }) {
+  // The normal outcome is plain text; colour is kept for running and failed runs.
+  if (status === 'completed') {
+    return (
+      <span className={cn('inline-flex h-[22px] items-center gap-1.5 text-[12.5px] text-fg-muted', className)}>
+        <span className="dot dot-ok h-1.5 w-1.5" aria-hidden="true" />
+        Completed
+      </span>
+    );
+  }
   return (
     <span className={cn('badge', RUN_CLASS[status] ?? '', className)}>
       {status === 'running' && <span className="dot dot-live h-1.5 w-1.5" aria-hidden="true" />}

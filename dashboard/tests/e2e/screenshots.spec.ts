@@ -33,13 +33,13 @@ const PAGES: { name: string; path: string; ready: string; prepare?: (page: Page,
       }
     },
   },
-  { name: 'transactions', path: '/transactions', ready: 'table tbody tr button' },
+  { name: 'transactions', path: '/transactions', ready: '[data-row-button]' },
   {
     name: 'transactions-lineage',
     path: '/transactions?match=matched',
-    ready: 'table tbody tr button',
+    ready: '[data-row-button]',
     prepare: async (page) => {
-      await page.locator('table tbody tr button').first().click();
+      await page.locator('[data-row-button]').first().click();
       await page.getByRole('tab', { name: 'Lineage' }).click();
       await page.getByText('Stored raw').waitFor();
     },

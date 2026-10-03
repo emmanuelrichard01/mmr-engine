@@ -6,7 +6,7 @@ import dynamic from 'next/dynamic';
 import { useReducedMotion, motion } from 'motion/react';
 import { ArrowRight, ArrowUpRight, CheckCircle2, RotateCw } from 'lucide-react';
 import { AgingBar, AgingLegend } from '@/components/aging';
-import { SeverityPip } from '@/components/badges';
+import { SeverityLabel, SeverityPip } from '@/components/badges';
 import { EmptyState } from '@/components/empty-state';
 import { Reveal, rowReveal } from '@/components/motion-primitives';
 import { ErrorNotice, PanelError, isConnectionError } from '@/components/notices';
@@ -216,7 +216,7 @@ export function OverviewView() {
           )}
         </Metric>
         <Metric
-          label="Open discrepancies"
+          label="Unresolved discrepancies"
           loading={exposure.isLoading}
           href="/inbox"
           foot={
@@ -224,7 +224,7 @@ export function OverviewView() {
               <span>
                 {SEVERITIES.filter((sev) => bySeverity[sev] > 0 && (sev === 'critical' || sev === 'high'))
                   .map((sev) => `${formatCount(bySeverity[sev])}${capped ? '+' : ''} ${sev}`)
-                  .join(', ') || 'None critical or high'}
+                  .join(', ') || 'None critical or high'}{' in Open'}
               </span>
             ) : null
           }
@@ -257,7 +257,7 @@ export function OverviewView() {
               </span>
               <span className="inline-flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-[2px] bg-[var(--color-chart-bar)]" />
-                Volume
+                Volume, relative to the busiest day
               </span>
             </div>
             <Segmented label="Trend range" value={range} options={RANGE_OPTIONS} onChange={setRange} />
@@ -459,14 +459,15 @@ function AttentionList({ rows, now }: { rows: NonNullable<ReturnType<typeof useD
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13.5px] font-medium text-fg">{humanize(d.discrepancy_type)}</span>
               <span className="mt-0.5 flex items-center gap-1.5 text-[12.5px] text-fg-subtle">
-                <PspIcon name={d.psp_name} className="h-3 w-3" />
+                <SeverityLabel severity={d.severity} />
+                <PspIcon name={d.psp_name} className="ml-0.5 h-3 w-3" />
                 <span className="t-mono truncate">{d.psp_transaction_ref ?? d.transaction_id}</span>
               </span>
             </span>
             <span className="text-right">
               <span className="num block text-[13.5px] font-medium text-fg">{formatNgn(d.estimated_exposure_ngn)}</span>
               <span className="num t-caption block">
-                <span className="sr-only">{d.severity ? `${d.severity} severity, ` : 'unclassified, '}raised </span>
+                <span className="sr-only">raised </span>
                 {formatAge(d.detected_at, now)} ago
               </span>
             </span>

@@ -59,10 +59,20 @@ export default function TrendChart({ days, height = 280 }: { days: TrendDay[]; h
     return days.map((d, i) => ({ ...d, volumeIndex: koboRatio(kobos[i], max) * 100 }));
   }, [days]);
 
-  const rateDomain = useMemo<[number, number]>(() => {
+  // Even steps on the rate axis (every 5 points, or 10 for a wide range).
+  const { rateDomain, rateTicks } = useMemo(() => {
     const rates = days.map((d) => d.match_rate_pct).filter((v): v is number => v !== null);
-    if (!rates.length) return [0, 100];
-    return [Math.max(0, Math.floor(Math.min(...rates) - 2)), 100];
+    const lo = rates.length ? Math.max(0, Math.floor((Math.min(...rates) - 1) / 5) * 5) : 0;
+    const step = 100 - lo > 30 ? 10 : 5;
+    const ticks: number[] = [];
+    for (let v = 100; v >= lo; v -= step) ticks.unshift(v);
+    return { rateDomain: [ticks[0], 100] as [number, number], rateTicks: ticks };
+  }, [days]);
+
+  // Date labels at a regular interval, counted back from the latest day so it is always labelled.
+  const dateTicks = useMemo(() => {
+    const step = days.length <= 10 ? 1 : days.length <= 35 ? 5 : 15;
+    return days.filter((_, i) => (days.length - 1 - i) % step === 0).map((d) => d.date);
   }, [days]);
 
   const tick = { fontSize: 12, fill: 'var(--color-fg-subtle)' };
@@ -79,12 +89,14 @@ export default function TrendChart({ days, height = 280 }: { days: TrendDay[]; h
             axisLine={false}
             tick={tick}
             tickFormatter={(d: string) => formatCalendarDate(d, false)}
-            minTickGap={28}
+            ticks={dateTicks}
+            interval={0}
             dy={8}
           />
           <YAxis
             yAxisId="rate"
             domain={rateDomain}
+            ticks={rateTicks}
             tickLine={false}
             axisLine={false}
             tick={tick}

@@ -62,7 +62,7 @@ export function ConfidenceEvidence({ strategy, score, evidence }: { strategy: st
   return (
     <div className="space-y-4">
       <table className="w-full text-[13px]">
-        <caption className="sr-only">Confidence by signal. Score is the signal on its own; contribution is the score times its weight.</caption>
+        <caption className="sr-only">Confidence by signal. Score is the signal on its own; adds is the score times its weight, in percentage points.</caption>
         <thead>
           <tr className="text-left">
             <th scope="col" className="pb-2 font-medium text-fg-subtle">
@@ -78,7 +78,7 @@ export function ConfidenceEvidence({ strategy, score, evidence }: { strategy: st
               Weight
             </th>
             <th scope="col" className="pb-2 text-right font-medium text-fg-subtle">
-              Adds
+              Adds (pts)
             </th>
           </tr>
         </thead>
@@ -93,7 +93,7 @@ export function ConfidenceEvidence({ strategy, score, evidence }: { strategy: st
                 <td className="py-2.5 pr-3">{v === null ? <span className="t-caption">Not recorded</span> : <Bar value={v} delay={i * 0.06} />}</td>
                 <td className="num py-2.5 text-right text-fg">{v === null ? '—' : `${(v * 100).toFixed(0)}%`}</td>
                 <td className="num py-2.5 text-right text-fg-subtle">{(s.weight * 100).toFixed(0)}%</td>
-                <td className="num py-2.5 text-right font-medium text-fg">{v === null ? '—' : (v * s.weight).toFixed(3)}</td>
+                <td className="num py-2.5 text-right font-medium text-fg">{v === null ? '—' : (v * s.weight * 100).toFixed(1)}</td>
               </tr>
             );
           })}
@@ -102,14 +102,13 @@ export function ConfidenceEvidence({ strategy, score, evidence }: { strategy: st
           <tfoot>
             <tr className="border-t border-line-strong">
               <th scope="row" colSpan={4} className="pt-2.5 text-left font-semibold text-fg">
-                Confidence (threshold 0.75)
+                Confidence (threshold 75%)
               </th>
-              <td className="num pt-2.5 text-right font-semibold text-fg">{total.toFixed(3)}</td>
+              <td className="num pt-2.5 text-right font-semibold text-fg">{`${(total * 100).toFixed(1)}%`}</td>
             </tr>
           </tfoot>
         )}
       </table>
-      {timeDelta !== null && <p className="t-caption">Legs were {formatGap(timeDelta)} apart.</p>}
     </div>
   );
 }
